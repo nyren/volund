@@ -1,5 +1,7 @@
 # Volund build system
 
+[![pipeline](https://github.com/nyren/volund/actions/workflows/pipeline.yml/badge.svg?branch=master&event=push)](https://github.com/nyren/volund/actions/workflows/pipeline.yml)
+
 **Volund** runs build steps in containers.
 
 Volund offers a simple solution to achieve portable and reproducible builds.
@@ -45,3 +47,9 @@ volund_main "$@"
 ```
 
 A simple bash script, typically `build.sh`, drives the build process.
+
+## License
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
