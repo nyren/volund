@@ -1,0 +1,194 @@
+#!/bin/bash
+#
+# Named terminal colors for Volund (sourced from lib/core).
+#
+# volund_color [attr ...] -- text
+#   Wraps text in color/style codes and a reset. For $(volund_color ...).
+#   Attributes: bold dim underline reverse, dark light,
+#               red green yellow blue magenta cyan orange grey
+#
+
+# Color when stdout or stderr is a tty, or FORCE_COLOR is set (for capture).
+# FORCE_COLOR overrides NO_COLOR. Checks fd 1 or 2 so $(volund_color ...)
+# still colors when the parent is a terminal (substitution is never a tty).
+_volund_want_color() {
+    case "${FORCE_COLOR:-}" in
+        ''|0|false|no) ;;
+        *) return 0 ;;
+    esac
+    [ -z "${NO_COLOR:-}" ] || return 1
+    [ -t 1 ] || [ -t 2 ]
+}
+
+# True when the terminal can take 256-color (setaf N / CSI 38;5;N) codes.
+_volund_has_256() {
+    case "${TERM:-}" in
+        *256*|*direct*) return 0 ;;
+    esac
+    case "${COLORTERM:-}" in
+        truecolor|24bit) return 0 ;;
+    esac
+    local n
+    n=$(tput colors 2>/dev/null || printf '0')
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    [ "$n" -ge 256 ]
+}
+
+# Emit a tput sequence, or the ANSI fallback if tput is missing/empty (e.g. TERM=dumb).
+_volund_color_seq() {
+    local fallback="$1"
+    shift
+    local seq=""
+    if command -v tput >/dev/null 2>&1; then
+        seq=$(tput "$@" 2>/dev/null || true)
+    fi
+    if [ -n "$seq" ]; then
+        printf '%s' "$seq"
+    else
+        printf '%s' "$fallback"
+    fi
+}
+
+# Foreground: $1 = 256-color index, $2 = 16-color index (0-15).
+_volund_setaf() {
+    local idx256="$1"
+    local idx16="$2"
+    if _volund_has_256; then
+        _volund_color_seq $'\033[38;5;'"${idx256}"'m' setaf "$idx256"
+        return 0
+    fi
+    if [ "$idx16" -ge 8 ]; then
+        _volund_color_seq $'\033['"$((idx16 + 82))"'m' setaf "$idx16"
+    else
+        _volund_color_seq $'\033[3'"${idx16}"'m' setaf "$idx16"
+    fi
+}
+
+_volund_sgr_bold() { _volund_color_seq $'\033[1m' bold; }
+_volund_sgr_dim() { _volund_color_seq $'\033[2m' dim; }
+_volund_sgr_underline() { _volund_color_seq $'\033[4m' smul; }
+_volund_sgr_reverse() { _volund_color_seq $'\033[7m' rev; }
+_volund_sgr_reset() { _volund_color_seq $'\033[0m' sgr0; }
+
+# Flat 256-color palette (muted, not VGA primaries). Prints: <256> <16>
+# $1 = color name, $2 = shade (dark|''|light)
+_volund_palette() {
+    local color="$1"
+    local shade="${2:-}"
+    case "$color/$shade" in
+        red/dark)          printf '95 1' ;;
+        red/light)         printf '174 9' ;;
+        red/*)             printf '167 1' ;;
+        green/dark)        printf '65 2' ;;
+        green/light)       printf '151 10' ;;
+        green/*)           printf '72 2' ;;
+        yellow/dark)       printf '136 3' ;;
+        yellow/light)      printf '187 11' ;;
+        yellow/*)          printf '179 3' ;;
+        blue/dark)         printf '24 4' ;;
+        blue/light)        printf '110 12' ;;
+        blue/*)            printf '67 4' ;;
+        magenta/dark)      printf '96 5' ;;
+        magenta/light)     printf '182 13' ;;
+        magenta/*)         printf '139 5' ;;
+        cyan/dark)         printf '66 6' ;;
+        cyan/light)        printf '152 14' ;;
+        cyan/*)            printf '73 6' ;;
+        orange/dark)       printf '94 3' ;;
+        orange/light)      printf '216 11' ;;
+        orange/*)          printf '173 3' ;;
+        grey/dark|gray/dark)   printf '238 0' ;;
+        grey/light|gray/light) printf '250 7' ;;
+        grey/*|gray/*)         printf '244 8' ;;
+        *)                 printf '' ;;
+    esac
+}
+
+_volund_is_color_attr() {
+    local a
+    a=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    case "$a" in
+        bold|dim|underline|reverse|dark|light) return 0 ;;
+        red|green|yellow|blue|magenta|cyan|orange|grey|gray) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Wrap text in named colors/styles and a reset.
+volund_color() {
+    local -a attrs=()
+    while [ $# -gt 0 ]; do
+        if [ "$1" = "--" ]; then
+            shift
+            break
+        fi
+        if _volund_is_color_attr "$1"; then
+            attrs+=("$1")
+            shift
+            continue
+        fi
+        local later
+        for later in "$@"; do
+            if [ "$later" = "--" ]; then
+                volund_error "volund_color: unknown attribute '$1'"
+            fi
+        done
+        break
+    done
+    if [ $# -eq 0 ]; then
+        volund_error "volund_color: usage: volund_color [attr ...] -- text"
+    fi
+    local text="$*"
+
+    local shade="" color=""
+    local -a styles=()
+    local a
+    for a in "${attrs[@]}"; do
+        a=$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]')
+        case "$a" in
+            dark|light)
+                if [ -n "$shade" ] && [ "$shade" != "$a" ]; then
+                    volund_error "volund_color: cannot combine dark and light"
+                fi
+                shade="$a"
+                ;;
+            red|green|yellow|blue|magenta|cyan|orange|grey|gray)
+                if [ -n "$color" ] && [ "$color" != "$a" ]; then
+                    volund_error "volund_color: multiple colors ('$color' and '$a')"
+                fi
+                color="$a"
+                ;;
+            bold|dim|underline|reverse)
+                styles+=("$a")
+                ;;
+        esac
+    done
+    if [ -n "$shade" ] && [ -z "$color" ]; then
+        volund_error "volund_color: dark/light requires a color name"
+    fi
+
+    if ! _volund_want_color; then
+        printf '%s' "$text"
+        return 0
+    fi
+
+    local seq="" s
+    for s in "${styles[@]}"; do
+        case "$s" in
+            bold) seq="${seq}$(_volund_sgr_bold)" ;;
+            dim) seq="${seq}$(_volund_sgr_dim)" ;;
+            underline) seq="${seq}$(_volund_sgr_underline)" ;;
+            reverse) seq="${seq}$(_volund_sgr_reverse)" ;;
+        esac
+    done
+    if [ -n "$color" ]; then
+        local pair idx256 idx16
+        pair=$(_volund_palette "$color" "$shade")
+        idx256=${pair% *}
+        idx16=${pair#* }
+        seq="${seq}$(_volund_setaf "$idx256" "$idx16")"
+    fi
+    printf '%s%s%s' "$seq" "$text" "$(_volund_sgr_reset)"
+}
+
+# vi: filetype=sh expandtab sw=4

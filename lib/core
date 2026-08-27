@@ -1,0 +1,471 @@
+#!/bin/bash
+#
+# Volund Core library
+#
+# Source in build script to use the Volund Build System
+#
+
+set -e
+
+###
+# Internal globals
+#
+declare -gA VOLUND_IMAGES=()
+declare -g VOLUND_DEFAULTS=""
+declare -ga VOLUND_ENV_NAMES=()        # names (no values) to forward via -e NAME
+declare -g VOLUND_VAR_PREFIX="v_"      # required prefix for persisted var names (configurable)
+
+declare -g VOLUND_PROJECT_ROOT=""
+declare -g VOLUND_VAR_DIR=""
+declare -g VOLUND_TMP_DIR=""
+
+# Call-scoped extras set by volund_with (not for direct use)
+declare -ga _VOLUND_WITH_ARGS=()
+
+_volund_inc="$(dirname "${BASH_SOURCE[0]}")/../inc"
+# shellcheck disable=SC1091
+. "$_volund_inc/color"
+# shellcheck disable=SC1091
+. "$_volund_inc/logging"
+
+
+###
+# Internal helper functions
+#
+
+# Detect VOLUND_PROJECT_ROOT and set up VOLUND_VAR_DIR / TMP_DIR (unless already overridden).
+_volund_detect_project_root() {
+    if [ -z "${VOLUND_PROJECT_ROOT:-}" ]; then
+        VOLUND_PROJECT_ROOT="$(pwd -P)"
+    fi
+    if [ -z "${VOLUND_VAR_DIR:-}" ]; then
+        VOLUND_VAR_DIR="$VOLUND_PROJECT_ROOT/.volund"
+    fi
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
+}
+
+# Validate that a persisted variable name is lowercase and matches the current prefix.
+_volund_validate_persisted_name() {
+    local name="$1"
+    local prefix="${VOLUND_VAR_PREFIX}"
+    if [[ ! "$name" =~ ^[a-z][a-z0-9_]*$ ]]; then
+        volund_error "persisted variable name must be lowercase and start with [a-z]: '$name'"
+    fi
+    if [ -n "$prefix" ] && [[ "$name" != "$prefix"* ]]; then
+        volund_error "persisted variable name must start with prefix '$prefix': '$name'"
+    fi
+}
+
+# Load persisted variables from disk (called from volund_main).
+_volund_load_persisted_vars() {
+    if [ ! -d "$VOLUND_VAR_DIR" ]; then
+        return 0
+    fi
+
+    for f in "$VOLUND_VAR_DIR"/var.*; do
+        [ -f "$f" ] || continue
+        local name="${f##*/var.}"
+        _volund_validate_persisted_name "$name"
+        local value
+        value="$(cat "$f")"
+        printf -v "$name" %s "$value"
+    done
+}
+
+# Resolve the container runtime binary
+_volund_runtime_binary() {
+    local rt
+    if [ -n "${VOLUND_RUNTIME:-}" ]; then
+        rt="${VOLUND_RUNTIME}"
+    else
+        if command -v podman >/dev/null 2>&1; then
+            rt="podman"
+        elif command -v docker >/dev/null 2>&1; then
+            rt="docker"
+        else
+            volund_error "neither podman nor docker found in PATH"
+        fi
+    fi
+
+    local resolved
+    resolved="$(command -v "$rt" 2>/dev/null || true)"
+    if [ -z "$resolved" ]; then
+        volund_error "container runtime '$rt' not found in PATH"
+    fi
+    echo "$resolved"
+}
+
+# List registered image aliases in debug log
+_volund_log_registered_aliases() {
+    volund_log debug "Registered aliases:"
+    local i
+    for i in "${!VOLUND_IMAGES[@]}"; do
+        volund_log debug "  $i -> ${VOLUND_IMAGES[$i]}"
+    done
+}
+
+# List user-defined targets (for help on stdout).
+_volund_list_user_targets() {
+    local func
+    while read -r _ _ func; do
+        case $func in
+            volund_*|_*) ;;
+            *) printf '  %s\n' "$func" ;;
+        esac
+    done < <(declare -F)
+}
+
+_volund_print_help() {
+    printf 'Usage: ./build.sh [target ...]\n'
+    if [ -n "${VOLUND_DEFAULTS:-}" ]; then
+        printf 'Default targets: %s\n' "$VOLUND_DEFAULTS"
+    fi
+    printf 'Available targets:\n'
+    _volund_list_user_targets
+}
+
+
+###
+# Public output helper functions
+#
+
+# Print a message. Styling is via volund_color, not applied here.
+volund_msg() {
+    printf '%s\n' "$*"
+}
+
+# Log an error and exit 1.
+volund_error() {
+    volund_log error "$*"
+    exit 1
+}
+
+
+###
+# Public functions to use in build script
+#
+
+# Register a container image under an alias for use with volund_cmd/volund_script.
+volund_image() {
+    local alias="$1"
+    local image="$2"
+    if [ -z "$alias" ] || [ -z "$image" ]; then
+        volund_error "volund_image: usage: volund_image <alias> <image>"
+    fi
+    VOLUND_IMAGES[$alias]="$image"
+    volund_log info "image $alias $image"
+}
+
+# Set default targets when volund_main is called with no arguments.
+volund_default() {
+    VOLUND_DEFAULTS="$*"
+}
+
+# Set the required prefix for persisted variable names (default "v_").
+volund_var_prefix() {
+    VOLUND_VAR_PREFIX="${1:-}"
+}
+
+# Persist a variable (must be called with the desired prefix).
+# The variable must already exist in the current scope (e.g. FOO=bar; volund_save_var FOO).
+volund_save_var() {
+    if [ ! -d "$VOLUND_VAR_DIR" ]; then
+        volund_error "volund_save_var: .volund directory does not exist"
+    fi
+    local name="$1"
+    if [ -z "$name" ]; then
+        volund_error "volund_save_var: usage: volund_save_var <name>"
+    fi
+    _volund_validate_persisted_name "$name"
+    local value="${!name}"
+    printf '%s' "$value" > "$VOLUND_VAR_DIR/var.$name"
+    printf -v "$name" %s "$value"
+    volund_log debug "save $name"
+}
+
+# Load persisted variables from disk into the current shell (useful after a volund_script wrote to .volund).
+volund_load_vars() {
+    if [ ! -d "$VOLUND_VAR_DIR" ]; then
+        volund_error "volund_load_vars: .volund directory does not exist"
+    fi
+    _volund_load_persisted_vars
+}
+
+# Reset build state (.volund and in-shell vars).
+volund_clean() {
+    if [ -d "$VOLUND_VAR_DIR" ]; then
+        for f in "$VOLUND_VAR_DIR"/var.*; do
+            [ -f "$f" ] || continue
+            local name="${f##*/var.}"
+            unset -v "$name"
+        done
+        rm -rf "$VOLUND_VAR_DIR"
+    fi
+    mkdir -p "$VOLUND_VAR_DIR" "$VOLUND_TMP_DIR"
+}
+
+# Declare a variable name to forward (current value) into containers started by
+# volund_cmd/volund_script.
+volund_env() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        volund_error "volund_env: usage: volund_env <NAME>"
+    fi
+    local n
+    for n in "${VOLUND_ENV_NAMES[@]:-}"; do
+        if [ "$n" = "$name" ]; then
+            return 0
+        fi
+    done
+    VOLUND_ENV_NAMES+=("$name")
+    volund_log debug "env $name"
+}
+
+
+# Portable container runtime (podman preferred).
+# With no args: print the resolved binary path.
+# With args: execute the binary with those arguments.
+volund_runtime() {
+    local binary
+    binary=$(_volund_runtime_binary)
+    if [ $# -eq 0 ]; then
+        echo "$binary"
+        return 0
+    fi
+    "$binary" "$@"
+}
+
+# Per-call extra engine flags for the following volund_cmd/volund_script.
+# Usage: volund_with [run-arg ...] -- command ...
+volund_with() {
+    local -a extra=()
+    while [ $# -gt 0 ]; do
+        if [ "$1" = "--" ]; then
+            shift
+            break
+        fi
+        extra+=("$1")
+        shift
+    done
+    if [ $# -eq 0 ]; then
+        volund_error "volund_with: usage: volund_with [run-arg ...] -- command ..."
+    fi
+    local -a _VOLUND_WITH_ARGS=("${extra[@]}")
+    "$@"
+}
+
+# Build docker/podman run arguments into array named by $3 (nameref).
+# Optional $4: name of array with per-call extra flags.
+# If VOLUND_RUNTIME_ARGS is set, built-in run/mount/user flags are omitted
+# (the env value is expanded at invoke time); env injection and extras remain.
+_volund_build_run_args() {
+    local runtime="$1"
+    local workdir="$2"
+    local -n _volund_run_out="$3"
+    local extra_name="${4:-}"
+
+    _volund_run_out=()
+
+    if [ -z "${VOLUND_RUNTIME_ARGS:-}" ]; then
+        _volund_run_out=(run --rm)
+
+        _volund_run_out+=(-v "$VOLUND_PROJECT_ROOT:$VOLUND_PROJECT_ROOT" -w "$workdir")
+
+        # --userns=keep-id is a Podman-specific feature for rootless containers
+        # to keep the host UID/GID mapped inside the container. Docker does not
+        # support this flag (it uses different userns handling via daemon config
+        # or rootless mode).
+        local rtname
+        rtname="$(basename "$runtime")"
+        if [[ "$rtname" == podman* ]]; then
+            _volund_run_out+=(--userns=keep-id)
+        fi
+
+        _volund_run_out+=(--user "$(id -u):$(id -g)" --entrypoint "")
+    fi
+
+    # Inject persisted variables by value (read directly from .volund/var.*)
+    if [ -d "$VOLUND_VAR_DIR" ]; then
+        for f in "$VOLUND_VAR_DIR"/var.*; do
+            [ -f "$f" ] || continue
+            local name="${f##*/var.}"
+            local value
+            value="$(cat "$f")"
+            _volund_run_out+=(-e "$name=$value")
+        done
+    fi
+
+    local fwd
+    for fwd in "${VOLUND_ENV_NAMES[@]:-}"; do
+        [ -n "$fwd" ] || continue
+        _volund_run_out+=(-e "$fwd")
+    done
+
+    if [ -n "$extra_name" ]; then
+        local -n _volund_extra_ref="$extra_name"
+        if [ ${#_volund_extra_ref[@]} -gt 0 ]; then
+            _volund_run_out+=("${_volund_extra_ref[@]}")
+        fi
+    fi
+}
+
+# Run a command inside a container using a registered image alias.
+volund_cmd() {
+    local alias="$1"; shift
+    local command="$1"; shift || true
+    local -a cargs=("$@")
+
+    if [ -z "${VOLUND_IMAGES[$alias]:-}" ]; then
+        _volund_log_registered_aliases
+        volund_error "volund_cmd: unknown image alias '$alias'"
+    fi
+
+    local image="${VOLUND_IMAGES[$alias]}"
+    local runtime
+    runtime=$(_volund_runtime_binary)
+
+    local workdir="$PWD"
+
+    local -a extra=("${_VOLUND_WITH_ARGS[@]}")
+    local -a run_args
+    _volund_build_run_args "$runtime" "$workdir" run_args extra
+
+    volund_log info "cmd $alias $command${cargs[*]+ ${cargs[*]}}"
+    volund_log debug "$runtime ${VOLUND_RUNTIME_ARGS:+$VOLUND_RUNTIME_ARGS }${run_args[*]} $image $command${cargs[*]+ ${cargs[*]}}"
+
+    local rc=0
+    if [ -n "${VOLUND_RUNTIME_ARGS:-}" ]; then
+        # Unquoted on purpose: VOLUND_RUNTIME_ARGS is an env override that expands to multiple flags.
+        # shellcheck disable=SC2086
+        "$runtime" $VOLUND_RUNTIME_ARGS "${run_args[@]}" "$image" "$command" "${cargs[@]}" || rc=$?
+    else
+        "$runtime" "${run_args[@]}" "$image" "$command" "${cargs[@]}" || rc=$?
+    fi
+    return "$rc"
+}
+
+# Run a script inside a container (writes a temp script under .volund/tmp).
+# Optional $2 is a short label for the info log (default: first line of the body).
+# Usage: volund_script <alias> [label] << 'VOLUND_EOF' ...
+volund_script() {
+    local alias="$1"
+    shift || true
+    local summary=""
+    if [ $# -gt 0 ]; then
+        summary="$1"
+        shift
+    fi
+
+    if [ -z "${VOLUND_IMAGES[$alias]:-}" ]; then
+        _volund_log_registered_aliases
+        volund_error "volund_script: unknown image alias '$alias'"
+    fi
+
+    local image="${VOLUND_IMAGES[$alias]}"
+    local runtime
+    runtime=$(_volund_runtime_binary)
+
+    # Capture the script body exactly (user calls with << 'VOLUND_EOF' ... EOF)
+    local body
+    body="$(cat)"
+
+    local workdir="$PWD"
+
+    if [ ! -d "$VOLUND_VAR_DIR" ]; then
+        volund_error "volund_script: .volund directory does not exist"
+    fi
+    mkdir -p "$VOLUND_TMP_DIR"
+    chmod 755 "$VOLUND_TMP_DIR" 2>/dev/null || true
+    local tmp
+    tmp="$(mktemp -p "$VOLUND_TMP_DIR" "volund-script-XXXXXX.sh")"
+
+    (
+        umask 022
+        {
+            echo '#!/bin/sh'
+            echo 'set -e'
+            echo "$body"
+        } > "$tmp"
+    )
+    chmod 755 "$tmp"
+
+    trap 'rm -f "$tmp" 2>/dev/null || true' EXIT RETURN
+
+    local -a extra=("${_VOLUND_WITH_ARGS[@]}")
+    local -a run_args
+    _volund_build_run_args "$runtime" "$workdir" run_args extra
+
+    local label="$summary"
+    if [ -z "$label" ]; then
+        label="$(printf '%s\n' "$body" | sed -n '1p') ..."
+    fi
+    volund_log info "script $alias $label"
+    volund_log debug "$body"
+    volund_log debug "$runtime ${VOLUND_RUNTIME_ARGS:+$VOLUND_RUNTIME_ARGS }${run_args[*]} $image sh $tmp"
+
+    # Invoke via the shell inside the image so we don't depend on the bind-mounted
+    # script having the execute bit (common issue with rootless userns + certain /tmp).
+    local rc=0
+    if [ -n "${VOLUND_RUNTIME_ARGS:-}" ]; then
+        # Unquoted on purpose: VOLUND_RUNTIME_ARGS is an env override that expands to multiple flags.
+        # shellcheck disable=SC2086
+        "$runtime" $VOLUND_RUNTIME_ARGS "${run_args[@]}" "$image" sh "$tmp" || rc=$?
+    else
+        "$runtime" "${run_args[@]}" "$image" sh "$tmp" || rc=$?
+    fi
+
+    rm -f "$tmp" 2>/dev/null || true
+    trap - EXIT RETURN
+    return "$rc"
+}
+
+# Main entry point: create .volund if needed, load persisted vars, then run targets.
+volund_main() {
+    mkdir -p "$VOLUND_VAR_DIR" "$VOLUND_TMP_DIR"
+
+    _volund_load_persisted_vars
+
+    local -a targets=("$@")
+
+    if [ ${#targets[@]} -eq 0 ]; then
+        read -ra targets <<< "${VOLUND_DEFAULTS}"
+    fi
+
+    if [ ${#targets[@]} -eq 1 ]; then
+        case "${targets[0]}" in
+            -h|--help)
+                _volund_print_help
+                return 0
+                ;;
+            help)
+                if declare -f help >/dev/null 2>&1; then
+                    help
+                else
+                    _volund_print_help
+                fi
+                return 0
+                ;;
+        esac
+    fi
+
+    if [ ${#targets[@]} -eq 0 ]; then
+        volund_log debug 'Define defaults with: volund_default "target1 target2 ..."'
+        volund_error "volund: no targets specified and no default targets set"
+    fi
+
+    local t
+    for t in "${targets[@]}"; do
+        if declare -f "$t" >/dev/null 2>&1; then
+            # Start delimiter; blue sits next to INFO green without blending into it.
+            volund_log info "$(volund_color blue -- "====> $t")"
+            "$t"
+        else
+            _volund_print_help
+            volund_error "volund: unknown target '$t'"
+        fi
+    done
+}
+
+_volund_detect_project_root
+
+# vi: filetype=sh expandtab sw=4

@@ -1,0 +1,12 @@
+./build.sh clean init
+
+ls
+
+./build.sh build
+
+ls dist
+cat dist/hello
+
+./build.sh verify
+
+./build.sh

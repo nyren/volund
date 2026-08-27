@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# Structured logging for Volund (sourced from lib/core).
+#
+# volund_log <level> <msg>
+#   Levels: debug, info, warning, error (does not exit).
+#   Format: <compact-iso-timestamp> <LEVEL> <msg>
+#   Filtered by VOLUND_LOG_LEVEL (default info).
+#   Color applies only to "timestamp LEVEL"; the message is unstyled
+#   unless the caller already wrapped it with volund_color.
+#
+
+# Numeric rank (higher = more severe).
+_volund_log_rank() {
+    case "$1" in
+        debug) echo 10 ;;
+        info) echo 20 ;;
+        warning) echo 30 ;;
+        error) echo 40 ;;
+        *) echo -1 ;;
+    esac
+}
+
+volund_log() {
+    local level="$1"
+    shift || true
+    local msg="$*"
+
+    local lr cr
+    lr=$(_volund_log_rank "$level")
+    if [ "$lr" -lt 0 ]; then
+        volund_error "volund_log: invalid level '$level' (allowed: debug, info, warning, error)"
+    fi
+
+    local cur="${VOLUND_LOG_LEVEL:-info}"
+    cr=$(_volund_log_rank "$cur")
+    if [ "$cr" -lt 0 ]; then
+        # Cannot call volund_log/volund_error: the invalid level would recurse.
+        printf '%s ERROR VOLUND_LOG_LEVEL: invalid value '\''%s'\'' (allowed: debug, info, warning, error)\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cur" >&2
+        exit 1
+    fi
+    [ "$lr" -ge "$cr" ] || return 0
+
+    local ts level_u prefix
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    level_u=$(printf '%s' "$level" | tr '[:lower:]' '[:upper:]')
+    prefix="$ts $level_u"
+    case "$level" in
+        debug)
+            prefix=$(volund_color dim -- "$prefix")
+            ;;
+        info)
+            prefix=$(volund_color bold green -- "$prefix")
+            ;;
+        warning)
+            prefix=$(volund_color yellow -- "$prefix")
+            ;;
+        error)
+            prefix=$(volund_color bold red -- "$prefix")
+            ;;
+    esac
+
+    printf '%s %s\n' "$prefix" "$msg" >&2
+}
+
+# vi: filetype=sh expandtab sw=4

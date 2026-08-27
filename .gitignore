@@ -2,5 +2,6 @@
 .*.swp
 
 # Build
-/build/
+/.build/
 /.volund/
+/.volund_test*/

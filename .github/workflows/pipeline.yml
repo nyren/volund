@@ -1,0 +1,66 @@
+name: pipeline
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Pages deploy needs write + id-token; build job only needs contents.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clean
+        run: ./build.sh clean
+
+      - name: Init
+        run: ./build.sh init
+
+      - name: Lint
+        run: ./build.sh lint
+
+      - name: Build
+        run: ./build.sh build
+
+      - name: Verify
+        run: ./build.sh verify
+
+      - name: Setup Pages
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/configure-pages@v5
+
+      - name: Prepare Pages artifact
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          mkdir -p _site
+          cp .build/example-core.svg _site/example-core.svg
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
