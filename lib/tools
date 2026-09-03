@@ -1,0 +1,109 @@
+#!/bin/bash
+#
+# Volund Tools library
+#
+# Thin wrappers that delegate to tools inside the volund-builder-tools image
+# via volund_cmd.
+#
+
+if ! declare -F volund_cmd >/dev/null 2>&1; then
+    echo "ERROR: volund/lib/tools must be sourced after volund/lib/core" >&2
+    exit 1
+fi
+
+volund_image _tools "ghcr.io/nyren/volund-rc/volund-builder-tools:0.3.0-1"
+
+_volund_tools_run() {
+    volund_with -e VOLUND_LOG_LEVEL -e USER -- \
+        volund_cmd _tools volund-tools "$@"
+}
+
+_volund_helm_run() {
+    local -a runtime_args=()
+
+    local helm_config="${HELM_CONFIG_HOME:-${HOME}/.config/helm}"
+    if [ -d "$helm_config" ]; then
+        helm_config="$(cd "$helm_config" && pwd)"
+        runtime_args+=(
+            -v "${helm_config}:${helm_config}"
+            -e "HELM_CONFIG_HOME=${helm_config}"
+        )
+    fi
+
+    local helm_cache="${HOME}/.cache/helm"
+    if [ -d "$helm_cache" ]; then
+        helm_cache="$(cd "$helm_cache" && pwd)"
+        runtime_args+=(
+            -v "${helm_cache}:${helm_cache}"
+            -e "HELM_CACHE_HOME=${helm_cache}"
+        )
+    fi
+
+    volund_with -e VOLUND_LOG_LEVEL -e USER "${runtime_args[@]}" -- \
+        volund_cmd _tools "$@"
+}
+
+###
+# Version (volund-tools version ...)
+#
+
+volund_version_dev() {
+    _volund_tools_run version dev
+}
+
+volund_version_rc() {
+    _volund_tools_run version rc
+}
+
+volund_version_release() {
+    _volund_tools_run version release
+}
+
+volund_version_increment() {
+    local component="${1:?volund_version_increment requires a component (major|minor|patch)}"
+    _volund_tools_run version increment "$component"
+}
+
+volund_version_convert() {
+    local format="${1:?volund_version_convert requires <format>}"
+    local version="${2:?volund_version_convert requires <version>}"
+    _volund_tools_run version convert --format "$format" "$version"
+}
+
+###
+# Repo (volund-tools repo ...)
+#
+
+volund_repo_get_branch() {
+    _volund_tools_run repo get-branch
+}
+
+volund_repo_is_dirty() {
+    _volund_tools_run repo is-dirty
+}
+
+volund_repo_is_clean() {
+    _volund_tools_run repo is-clean
+}
+
+volund_repo_is_uptodate() {
+    _volund_tools_run repo is-uptodate
+}
+
+###
+# Helm (volund-tools helm ...)
+#
+
+volund_helm_package() {
+    _volund_helm_run volund-tools helm package "$@"
+}
+
+volund_helm_push() {
+    _volund_helm_run helm push "$@"
+}
+
+volund_helm_pull() {
+    _volund_helm_run helm pull "$@"
+}
+
+# vi: filetype=sh expandtab sw=4
