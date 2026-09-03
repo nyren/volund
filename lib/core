@@ -153,7 +153,7 @@ volund_image() {
         volund_error "volund_image: usage: volund_image <alias> <image>"
     fi
     VOLUND_IMAGES[$alias]="$image"
-    volund_log info "image $alias $image"
+    volund_log debug "image $alias $image"
 }
 
 # Set default targets when volund_main is called with no arguments.

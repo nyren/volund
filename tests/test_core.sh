@@ -282,9 +282,10 @@ test_volund_api_logs() {
         }
 
         # Keep registration in this shell; $() would drop VOLUND_IMAGES.
+        VOLUND_LOG_LEVEL=debug
         volund_image myalias example.com/img:1 2>"$VOLUND_TMP_DIR/image.log"
         err=$(cat "$VOLUND_TMP_DIR/image.log")
-        echo "$err" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z INFO image myalias example.com/img:1$' || {
+        echo "$err" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z DEBUG image myalias example.com/img:1$' || {
             echo "missing image log: $err"
             exit 1
         }
