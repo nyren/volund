@@ -426,6 +426,77 @@ test_helm_push_pull() {
     fi
 }
 
+_git_test_repo() {
+    repo="$VOLUND_TMP_DIR/repo"
+    bare="$VOLUND_TMP_DIR/bare.git"
+    mkdir -p "$repo" "$bare"
+    git init -q -b main "$repo"
+    git init -q --bare "$bare"
+    repo=$(cd "$repo" && pwd)
+    bare=$(cd "$bare" && pwd)
+    printf '1.0.0\n' > "$repo/VERSION"
+    git -C "$repo" add VERSION
+    git -C "$repo" remote add origin "$bare"
+    export GIT_AUTHOR_NAME=VolundTest
+    export GIT_AUTHOR_EMAIL=volund@test.example
+    export GIT_COMMITTER_NAME=VolundTest
+    export GIT_COMMITTER_EMAIL=volund@test.example
+}
+
+test_volund_git_commit_and_push() {
+    local TEST_NAME="volund_git commit and local push"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        unset VOLUND_GIT_CREDENTIALS
+        _git_test_repo
+
+        volund_git -C "$repo" commit -m "test commit"
+        volund_git -C "$repo" push origin HEAD
+
+        log=$(git --git-dir="$bare" log -1 --format='%an <%ae> %s' main)
+        echo "$log" | grep -q 'VolundTest <volund@test.example> test commit' || {
+            echo "unexpected commit in bare repo: $log"
+            exit 1
+        }
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_volund_git_auto_push() {
+    local TEST_NAME="volund_git auto credentials local push"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        _git_test_repo
+        export VOLUND_GIT_CREDENTIALS=auto
+
+        volund_git -C "$repo" commit -m "test commit"
+        volund_git -C "$repo" push origin HEAD
+
+        log=$(git --git-dir="$bare" log -1 --format='%s' main)
+        echo "$log" | grep -q 'test commit' || {
+            echo "auto push did not land commit: $log"
+            exit 1
+        }
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 # Run all
 test_tools_forwards_log_level
 test_version_dev
@@ -437,6 +508,8 @@ test_repo_get_branch
 test_repo_is_dirty_is_clean
 test_helm_package
 test_helm_push_pull
+test_volund_git_commit_and_push
+test_volund_git_auto_push
 
 end_test_summary
 
