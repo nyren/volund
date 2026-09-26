@@ -8,6 +8,10 @@ cd "$(dirname "$0")/.."
 . lib/core
 . lib/tools
 
+if [ -n "${VOLUND_TOOLS_IMAGE:-}" ]; then
+    volund_image _tools "$VOLUND_TOOLS_IMAGE"
+fi
+
 . tests/_helper.sh
 
 _make_sample_chart() {
@@ -405,8 +409,8 @@ test_helm_push_pull() {
             echo "push to closed port should fail: $push_out"
             exit 1
         }
-        echo "$push_out" | grep -q 'cmd _tools helm push' || {
-            echo "push did not run helm in tools container: $push_out"
+        echo "$push_out" | grep -q 'cmd _tools volund-tools helm push' || {
+            echo "push did not run volund-tools helm push: $push_out"
             exit 1
         }
         [ "$pull_rc" -ne 0 ] || {
