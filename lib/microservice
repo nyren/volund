@@ -1,0 +1,248 @@
+#!/bin/bash
+#
+# Microservice library
+#
+# Pre-defined build.sh targets for a microservice using Helm charts and
+# container images. Chart-only and image-only projects are also supported.
+#
+# Required project settings defined in build.sh:
+#   DEFAULT_REGISTRY          - Container registry, including repository base path
+#   DEFAULT_REPO_PATH_DEV     - Repository path for Development images
+#   DEFAULT_REPO_PATH_CI      - Repository path for Continuous Integration images
+#   DEFAULT_REPO_PATH_RC      - Repository path for Release Candidate images
+#   DEFAULT_REPO_PATH_RELEASE - Repository path for Release images
+#
+#   CHARTS[<key>]=<chart-name>  - Map of helm charts
+#   IMAGES[<key>]=<image-name>  - Map of container images
+#
+# Optional overrides from environment:
+#   REGISTRY           - Override container registry
+#   REPO_PATH          - Override all default repository paths
+#   REPO_PATH_DEV      - Override Development repository path
+#   REPO_PATH_CI       - Override CI repository path
+#   REPO_PATH_RC       - Override Release Candidate repository path
+#   REPO_PATH_RELEASE  - Override Release repository path
+#
+
+if ! declare -F volund_version_dev > /dev/null ; then
+    echo 'ERROR: volund/lib/microservice must be sourced after volund/lib/tools' >&2
+    exit 1
+fi
+
+declare -g DEFAULT_REGISTRY
+declare -g DEFAULT_REPO_PATH_DEV
+declare -g DEFAULT_REPO_PATH_CI
+declare -g DEFAULT_REPO_PATH_RC
+declare -g DEFAULT_REPO_PATH_RELEASE
+declare -gA CHARTS=()
+declare -gA IMAGES=()
+
+_validate_key() {
+    local key="$1"
+    local what="$2"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || \
+        volund_error "$what key '$key' is not a valid identifier"
+}
+
+_set_vars() {
+    [ "$v_registry" ] || \
+        volund_error "REGISTRY / DEFAULT_REGISTRY not defined"
+
+    [ "$v_version" ] || \
+        volund_error "version not defined"
+
+    [ "$v_repo_path" ] || \
+        volund_error "repo path not defined"
+
+    volund_save_var v_registry
+    volund_save_var v_repo_path
+
+    v_chart_repo="oci://${v_registry}/${v_repo_path}/charts"
+    volund_save_var v_chart_repo
+
+    local oci_tag
+    oci_tag=$(volund_version_convert oci-tag "$v_version")
+
+    local key value var
+    for key in "${!CHARTS[@]}"; do
+        _validate_key "$key" CHARTS
+        value=${CHARTS[$key]}
+        var="v_${key}_chart_dir"
+        printf -v "$var" %s "charts/${value}"
+        volund_save_var "$var"
+        var="v_${key}_chart_path"
+        printf -v "$var" %s ".build/${value}-${v_version}.tgz"
+        volund_save_var "$var"
+    done
+
+    for key in "${!IMAGES[@]}"; do
+        _validate_key "$key" IMAGES
+        value=${IMAGES[$key]}
+        var="v_${key}_image_ref"
+        printf -v "$var" %s "${v_registry}/${v_repo_path}/${value}:${oci_tag}"
+        volund_save_var "$var"
+    done
+}
+
+_check_branch() {
+    local branch="$1"
+    [ "$branch" ] || \
+        branch=$(volund_repo_get_branch)
+    [ "$branch" ] || \
+        volund_error "failed to get current git branch"
+
+    volund_repo_is_clean || \
+        volund_error "$branch: modified files present"
+
+    volund_repo_is_uptodate || \
+        volund_error "$branch: local branch not up-to-date with upstream"
+}
+
+set_version_dev() {
+    v_version=$(volund_version_dev)
+    volund_save_var v_version
+}
+
+set_version_rc() {
+    _check_branch
+    v_version=$(volund_version_rc)
+    volund_save_var v_version
+}
+
+set_version_release() {
+    _check_branch
+    v_version=$(volund_version_release)
+    volund_save_var v_version
+}
+
+set_repo_dev() {
+    v_registry="${REGISTRY:-$DEFAULT_REGISTRY}"
+    v_repo_path="${REPO_PATH_DEV:-${REPO_PATH:-$DEFAULT_REPO_PATH_DEV}}"
+    _set_vars
+}
+
+set_repo_ci() {
+    v_registry="${REGISTRY:-$DEFAULT_REGISTRY}"
+    v_repo_path="${REPO_PATH_CI:-${REPO_PATH:-$DEFAULT_REPO_PATH_CI}}"
+    _set_vars
+}
+
+set_repo_rc() {
+    v_registry="${REGISTRY:-$DEFAULT_REGISTRY}"
+    v_repo_path="${REPO_PATH_RC:-${REPO_PATH:-$DEFAULT_REPO_PATH_RC}}"
+    _set_vars
+}
+
+set_repo_release() {
+    v_registry="${REGISTRY:-$DEFAULT_REGISTRY}"
+    v_repo_path="${REPO_PATH_RELEASE:-${REPO_PATH:-$DEFAULT_REPO_PATH_RELEASE}}"
+    _set_vars
+}
+
+publish_charts() {
+    [ ${#CHARTS[@]} -eq 0 ] && return 0
+
+    [ "$v_chart_repo" ] || \
+        volund_error "chart repo not defined"
+
+    local key path_var path ref_file digest_file ref digest ref_var digest_var
+    for key in "${!CHARTS[@]}"; do
+        _validate_key "$key" CHARTS
+        path_var="v_${key}_chart_path"
+        path="${!path_var}"
+        [ "$path" ] || \
+            volund_error "$path_var not defined"
+        [ -f "$path" ] || \
+            volund_error "${path}: packaged chart not found"
+
+        ref_file="$VOLUND_TMP_DIR/${key}.oci-ref"
+        digest_file="$VOLUND_TMP_DIR/${key}.oci-digest"
+
+        volund_helm_push "$path" "$v_chart_repo" \
+            --oci-ref-file "$ref_file" \
+            --oci-digest-file "$digest_file"
+
+        [ -f "$ref_file" ] || \
+            volund_error "${ref_file}: oci ref not written"
+        [ -f "$digest_file" ] || \
+            volund_error "${digest_file}: oci digest not written"
+
+        ref=$(cat "$ref_file")
+        digest=$(cat "$digest_file")
+        [ "$ref" ] || \
+            volund_error "${ref_file}: empty oci ref"
+        [ "$digest" ] || \
+            volund_error "${digest_file}: empty oci digest"
+
+        url_var="v_${key}_chart_url"
+        digest_var="v_${key}_chart_digest"
+        printf -v "$url_var" %s "oci://$ref"
+        printf -v "$digest_var" %s "$digest"
+        volund_save_var "$url_var"
+        volund_save_var "$digest_var"
+    done
+}
+
+publish_images() {
+    local key ref_var ref
+    for key in "${!IMAGES[@]}"; do
+        _validate_key "$key" IMAGES
+        ref_var="v_${key}_image_ref"
+        ref="${!ref_var}"
+        [ "$ref" ] || \
+            volund_error "$ref_var not defined"
+        volund_runtime push "$ref"
+    done
+}
+
+bump_version() {
+    local branch component
+    branch=$(volund_repo_get_branch)
+
+    _check_branch "$branch"
+
+    if [[ "$branch" == main || "$branch" == master ]]; then
+        component="minor"
+        [ -z "$VERSION_BUMP" ] || component=$VERSION_BUMP
+    elif [[ "$branch" == release-* ]]; then
+        component="patch"
+        if [ -n "$VERSION_BUMP" ] && [ "$VERSION_BUMP" != patch ]; then
+            volund_error "$branch: only patch version can be increased on a release branch"
+        fi
+    else
+        volund_error "$branch: not an official branch (main, master, or release-*)"
+    fi
+
+    volund_version_increment "$component"
+
+    volund_git add VERSION
+    volund_git commit -m "Bump $component version"
+    volund_git push
+}
+
+# Publish Release Candidate of latest commit
+manual_rc() {
+    volund_main        \
+        clean          \
+        init           \
+        set_version_rc \
+        set_repo_rc    \
+        build          \
+        verify         \
+        publish
+}
+
+# Release project based on latest commit and bump version
+manual_release() {
+    volund_main             \
+        clean               \
+        init                \
+        set_version_release \
+        set_repo_release    \
+        build               \
+        verify              \
+        bump_version        \
+        publish
+}
+
+# vi: filetype=sh expandtab sw=4
