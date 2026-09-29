@@ -430,6 +430,11 @@ test_microservice_bump_version_gates() {
     setup_test_volund
     (
         volund_clean
+        # Untracked file in the repo root. .volund_test* and .build are gitignored,
+        # so a marker there would not make the tree dirty.
+        marker="bump-version-test-dirty"
+        trap 'rm -f "$marker"' EXIT
+        echo dirty > "$marker"
         set +e
         err=$(bump_version 2>&1)
         rc=$?
