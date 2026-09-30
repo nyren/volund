@@ -233,16 +233,17 @@ test_version_increment() {
     (
         volund_clean
 
-        orig=$(cat VERSION)
+        local repo
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _tools_version_repo "$repo"
+        cd "$repo"
+
         volund_version_increment patch || {
             echo "volund_version_increment failed"
-            echo "$orig" > VERSION
             exit 1
         }
-        new=$(cat VERSION)
-        echo "$orig" > VERSION
-        [ "$new" != "$orig" ] || {
-            echo "increment did not change VERSION"
+        [ "$(cat VERSION)" = "1.2.4" ] || {
+            echo "patch increment of 1.2.3 produced: $(cat VERSION)"
             exit 1
         }
     ) || failed=1
@@ -287,16 +288,25 @@ test_repo_get_branch() {
     (
         volund_clean
 
+        local repo out
+        repo="$VOLUND_TMP_DIR/branch-repo"
+        mkdir -p "$repo"
+        git init -q -b release-2 "$repo"
+        printf '1.2.3\n' > "$repo/VERSION"
+        git -C "$repo" add VERSION
+        GIT_AUTHOR_NAME=VolundTest \
+            GIT_AUTHOR_EMAIL=volund@test.example \
+            GIT_COMMITTER_NAME=VolundTest \
+            GIT_COMMITTER_EMAIL=volund@test.example \
+            git -C "$repo" commit -q -m "add VERSION"
+        cd "$repo"
+
         out=$(volund_repo_get_branch) || {
             echo "volund_repo_get_branch failed"
             exit 1
         }
-        [ -n "$out" ] || {
-            echo "empty branch name"
-            exit 1
-        }
-        echo "$out" | grep -qE '^[A-Za-z0-9._/-]+$' || {
-            echo "invalid branch: '$out'"
+        [ "$out" = "release-2" ] || {
+            echo "unexpected branch: '$out'"
             exit 1
         }
     ) || failed=1
@@ -316,22 +326,39 @@ test_repo_is_dirty_is_clean() {
     (
         volund_clean
 
+        local repo dirty_rc clean_rc
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _tools_version_repo "$repo"
+        cd "$repo"
+
         set +e
         volund_repo_is_dirty
         dirty_rc=$?
         volund_repo_is_clean
         clean_rc=$?
         set -e
-        [ "$dirty_rc" -ne "$clean_rc" ] || {
-            echo "is-dirty ($dirty_rc) and is-clean ($clean_rc) should differ"
+        [ "$dirty_rc" -eq 1 ] || {
+            echo "clean tree reported dirty: $dirty_rc"
             exit 1
         }
-        [ "$dirty_rc" -eq 0 ] || [ "$dirty_rc" -eq 1 ] || {
-            echo "is-dirty unexpected rc $dirty_rc"
+        [ "$clean_rc" -eq 0 ] || {
+            echo "clean tree reported not clean: $clean_rc"
             exit 1
         }
-        [ "$clean_rc" -eq 0 ] || [ "$clean_rc" -eq 1 ] || {
-            echo "is-clean unexpected rc $clean_rc"
+
+        printf 'dirty\n' > dirty.txt
+        set +e
+        volund_repo_is_dirty
+        dirty_rc=$?
+        volund_repo_is_clean
+        clean_rc=$?
+        set -e
+        [ "$dirty_rc" -eq 0 ] || {
+            echo "dirty tree reported clean: $dirty_rc"
+            exit 1
+        }
+        [ "$clean_rc" -eq 1 ] || {
+            echo "dirty tree reported clean by is-clean: $clean_rc"
             exit 1
         }
     ) || failed=1

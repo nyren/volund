@@ -54,23 +54,27 @@ test_microservice_set_version_dev() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
+    # Absolute paths: set_version_dev runs with cwd inside the fixture repo.
+    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
+    v_version=
     (
         volund_clean
 
-        v_version=""
-        set_version_dev || echo "set_version_dev failed"
+        local repo short persisted
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _ms_version_repo "$repo"
+        repo=$(cd "$repo" && pwd)
+        short=$(git -C "$repo" rev-parse HEAD)
+        short=${short:0:8}
+        cd "$repo"
 
-        echo "$v_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-h[0-9a-f]+' || {
-            echo "invalid version: '$v_version'"
-            exit 1
-        }
-
-        local version_persisted
-        version_persisted=$(cat "$VOLUND_VAR_DIR/var.v_version")
-        [ "$version_persisted" = "$v_version" ] || {
-            echo "invalid persisted version: '$version_persisted'"
-            exit 1
-        }
+        set_version_dev || test_error "set_version_dev failed"
+        [ "$v_version" = "1.2.3-1-h${short}" ] || \
+            test_error "invalid dev version: '$v_version'"
+        persisted=$(cat "$VOLUND_VAR_DIR/var.v_version")
+        [ "$persisted" = "$v_version" ] || \
+            test_error "dev version not persisted: '$persisted'"
     ) || failed=1
     cleanup_test_volund $failed
     if [ $failed -eq 0 ]; then
@@ -449,27 +453,50 @@ test_microservice_publish_images() {
     fi
 }
 
-test_microservice_bump_version_gates() {
-    local TEST_NAME="bump_version rejects unofficial/dirty tree"
+test_microservice_bump_version() {
+    local TEST_NAME="bump_version commits and pushes minor bump"
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
     (
         volund_clean
-        # Untracked file in the repo root. .volund_test* and .build are gitignored,
-        # so a marker there would not make the tree dirty.
-        marker="bump-version-test-dirty"
-        trap 'rm -f "$marker"' EXIT
-        echo dirty > "$marker"
-        set +e
-        err=$(bump_version 2>&1)
-        rc=$?
-        set -e
-        [ "$rc" -ne 0 ] || { echo "bump_version should fail here: $err"; exit 1; }
-        echo "$err" | grep -qE 'modified files present|not an official branch|not up-to-date' || {
-            echo "unexpected bump_version error: $err"
-            exit 1
-        }
+
+        local repo bare log blob
+        repo="$VOLUND_TMP_DIR/bump-repo"
+        bare="$VOLUND_TMP_DIR/bump-bare.git"
+        mkdir -p "$repo"
+        git init -q -b main "$repo"
+        git init -q --bare "$bare"
+        repo=$(cd "$repo" && pwd)
+        bare=$(cd "$bare" && pwd)
+        printf '1.2.3\n' > "$repo/VERSION"
+        git -C "$repo" add VERSION
+        GIT_AUTHOR_NAME=VolundTest \
+            GIT_AUTHOR_EMAIL=volund@test.example \
+            GIT_COMMITTER_NAME=VolundTest \
+            GIT_COMMITTER_EMAIL=volund@test.example \
+            git -C "$repo" commit -q -m "add VERSION"
+        # Absolute path remote so the tools container can push without credentials.
+        git -C "$repo" remote add origin "$bare"
+        git -C "$repo" push -u origin main
+
+        cd "$repo"
+        unset VOLUND_GIT_CREDENTIALS
+        export GIT_AUTHOR_NAME=VolundTest
+        export GIT_AUTHOR_EMAIL=volund@test.example
+        export GIT_COMMITTER_NAME=VolundTest
+        export GIT_COMMITTER_EMAIL=volund@test.example
+
+        bump_version
+
+        [ "$(cat VERSION)" = "1.3.0" ] || \
+            test_error "VERSION not bumped to 1.3.0: $(cat VERSION)"
+        log=$(git --git-dir="$bare" log -1 --format='%an <%ae> %s' main)
+        [ "$log" = "VolundTest <volund@test.example> Bump minor version" ] || \
+            test_error "unexpected pushed commit: $log"
+        blob=$(git --git-dir="$bare" show main:VERSION)
+        [ "$blob" = "1.3.0" ] || \
+            test_error "pushed VERSION is '$blob'"
     ) || failed=1
     cleanup_test_volund $failed
     if [ $failed -eq 0 ]; then
@@ -489,7 +516,7 @@ test_microservice_set_version_variants
 test_microservice_chart_path_build_metadata
 test_microservice_publish_charts
 test_microservice_publish_images
-test_microservice_bump_version_gates
+test_microservice_bump_version
 
 end_test_summary
 
