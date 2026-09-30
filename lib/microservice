@@ -84,33 +84,17 @@ _set_vars() {
     done
 }
 
-_check_branch() {
-    local branch="$1"
-    [ "$branch" ] || \
-        branch=$(volund_repo_get_branch)
-    [ "$branch" ] || \
-        volund_error "failed to get current git branch"
-
-    volund_repo_is_clean || \
-        volund_error "$branch: modified files present"
-
-    volund_repo_is_uptodate || \
-        volund_error "$branch: local branch not up-to-date with upstream"
-}
-
 set_version_dev() {
     v_version=$(volund_version_dev)
     volund_save_var v_version
 }
 
 set_version_rc() {
-    _check_branch
     v_version=$(volund_version_rc)
     volund_save_var v_version
 }
 
 set_version_release() {
-    _check_branch
     v_version=$(volund_version_release)
     volund_save_var v_version
 }
@@ -198,8 +182,14 @@ publish_images() {
 bump_version() {
     local branch component
     branch=$(volund_repo_get_branch)
+    [ "$branch" ] || \
+        volund_error "failed to get current git branch"
 
-    _check_branch "$branch"
+    volund_repo_is_clean || \
+        volund_error "$branch: modified files present"
+
+    volund_repo_is_uptodate || \
+        volund_error "$branch: local branch not up-to-date with upstream"
 
     if [[ "$branch" == main || "$branch" == master ]]; then
         component="minor"
