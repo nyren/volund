@@ -14,6 +14,28 @@ fi
 
 . tests/_helper.sh
 
+# Clean git repo: VERSION=1.2.3, then one commit that does not touch it.
+# Count since the VERSION commit is therefore 1.
+_tools_version_repo() {
+    local repo="$1"
+    mkdir -p "$repo"
+    git init -q -b main "$repo"
+    printf '1.2.3\n' > "$repo/VERSION"
+    git -C "$repo" add VERSION
+    GIT_AUTHOR_NAME=VolundTest \
+        GIT_AUTHOR_EMAIL=volund@test.example \
+        GIT_COMMITTER_NAME=VolundTest \
+        GIT_COMMITTER_EMAIL=volund@test.example \
+        git -C "$repo" commit -q -m "add VERSION"
+    printf 'x\n' > "$repo/unrelated.txt"
+    git -C "$repo" add unrelated.txt
+    GIT_AUTHOR_NAME=VolundTest \
+        GIT_AUTHOR_EMAIL=volund@test.example \
+        GIT_COMMITTER_NAME=VolundTest \
+        GIT_COMMITTER_EMAIL=volund@test.example \
+        git -C "$repo" commit -q -m "unrelated"
+}
+
 _make_sample_chart() {
     local chart="$1"
     mkdir -p "$chart/templates"
@@ -73,12 +95,35 @@ test_version_dev() {
     (
         volund_clean
 
+        local repo short out
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _tools_version_repo "$repo"
+        repo=$(cd "$repo" && pwd)
+        short=$(git -C "$repo" rev-parse HEAD)
+        short=${short:0:8}
+        cd "$repo"
+
         out=$(volund_version_dev) || {
             echo "volund_version_dev failed"
             exit 1
         }
-        echo "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-h[0-9a-f]+' || {
+        [ "$out" = "1.2.3-1-h${short}" ] || {
             echo "invalid dev version: '$out'"
+            exit 1
+        }
+
+        printf 'dirty\n' > dirty.txt
+        # Podman --userns=keep-id fails if USER is not the invoking account.
+        local user
+        user=$(id -un)
+        USER=$user
+        export USER
+        out=$(volund_version_dev) || {
+            echo "dirty volund_version_dev failed"
+            exit 1
+        }
+        [ "$out" = "1.2.3-1-h${short}-${user}" ] || {
+            echo "invalid dirty dev version: '$out'"
             exit 1
         }
     ) || failed=1
@@ -98,29 +143,34 @@ test_version_rc() {
     (
         volund_clean
 
+        local repo out rc
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _tools_version_repo "$repo"
+        repo=$(cd "$repo" && pwd)
+        cd "$repo"
+
+        out=$(volund_version_rc) || {
+            echo "volund_version_rc failed"
+            exit 1
+        }
+        [ "$out" = "1.2.3-1" ] || {
+            echo "invalid rc version: '$out'"
+            exit 1
+        }
+
+        printf 'dirty\n' > dirty.txt
         set +e
-        volund_repo_is_dirty
-        dirty=$?
+        out=$(volund_version_rc 2>&1)
+        rc=$?
         set -e
-        if [ "$dirty" -eq 0 ]; then
-            set +e
-            out=$(volund_version_rc 2>&1)
-            rc=$?
-            set -e
-            [ "$rc" -ne 0 ] || {
-                echo "expected dirty rc to fail, got: $out"
-                exit 1
-            }
-        else
-            out=$(volund_version_rc) || {
-                echo "volund_version_rc failed"
-                exit 1
-            }
-            echo "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' || {
-                echo "invalid rc version: '$out'"
-                exit 1
-            }
-        fi
+        [ "$rc" -ne 0 ] || {
+            echo "expected dirty rc to fail, got: $out"
+            exit 1
+        }
+        echo "$out" | grep -q 'dirty rc version' || {
+            echo "unexpected dirty rc error: $out"
+            exit 1
+        }
     ) || failed=1
     cleanup_test_volund $failed
     if [ $failed -eq 0 ]; then
@@ -138,29 +188,34 @@ test_version_release() {
     (
         volund_clean
 
+        local repo out rc
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _tools_version_repo "$repo"
+        repo=$(cd "$repo" && pwd)
+        cd "$repo"
+
+        out=$(volund_version_release) || {
+            echo "volund_version_release failed"
+            exit 1
+        }
+        [ "$out" = "1.2.3" ] || {
+            echo "invalid release version: '$out'"
+            exit 1
+        }
+
+        printf 'dirty\n' > dirty.txt
         set +e
-        volund_repo_is_dirty
-        dirty=$?
+        out=$(volund_version_release 2>&1)
+        rc=$?
         set -e
-        if [ "$dirty" -eq 0 ]; then
-            set +e
-            out=$(volund_version_release 2>&1)
-            rc=$?
-            set -e
-            [ "$rc" -ne 0 ] || {
-                echo "expected dirty release to fail, got: $out"
-                exit 1
-            }
-        else
-            out=$(volund_version_release) || {
-                echo "volund_version_release failed"
-                exit 1
-            }
-            echo "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+$' || {
-                echo "invalid release version: '$out'"
-                exit 1
-            }
-        fi
+        [ "$rc" -ne 0 ] || {
+            echo "expected dirty release to fail, got: $out"
+            exit 1
+        }
+        echo "$out" | grep -q 'dirty release version' || {
+            echo "unexpected dirty release error: $out"
+            exit 1
+        }
     ) || failed=1
     cleanup_test_volund $failed
     if [ $failed -eq 0 ]; then

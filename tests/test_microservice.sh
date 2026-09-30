@@ -26,6 +26,29 @@ _ms_defaults() {
     DEFAULT_REPO_PATH_RELEASE="myorg"
 }
 
+# Clean git repo: VERSION=1.2.3, then one commit that does not touch it.
+# Count since the VERSION commit is therefore 1. Identity is per-command so
+# the fixture does not depend on the host gitconfig.
+_ms_version_repo() {
+    local repo="$1"
+    mkdir -p "$repo"
+    git init -q -b main "$repo"
+    printf '1.2.3\n' > "$repo/VERSION"
+    git -C "$repo" add VERSION
+    GIT_AUTHOR_NAME=VolundTest \
+        GIT_AUTHOR_EMAIL=volund@test.example \
+        GIT_COMMITTER_NAME=VolundTest \
+        GIT_COMMITTER_EMAIL=volund@test.example \
+        git -C "$repo" commit -q -m "add VERSION"
+    printf 'x\n' > "$repo/unrelated.txt"
+    git -C "$repo" add unrelated.txt
+    GIT_AUTHOR_NAME=VolundTest \
+        GIT_AUTHOR_EMAIL=volund@test.example \
+        GIT_COMMITTER_NAME=VolundTest \
+        GIT_COMMITTER_EMAIL=volund@test.example \
+        git -C "$repo" commit -q -m "unrelated"
+}
+
 test_microservice_set_version_dev() {
     local TEST_NAME="set_version_dev produce valid version"
     start_test "$TEST_NAME"
@@ -236,39 +259,42 @@ test_microservice_set_version_variants() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
+    # Absolute paths: set_version_* runs with cwd inside the fixture repo.
+    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     v_version=
     (
         volund_clean
 
+        local repo short persisted
+        repo="$VOLUND_TMP_DIR/version-repo"
+        _ms_version_repo "$repo"
+        repo=$(cd "$repo" && pwd)
+        short=$(git -C "$repo" rev-parse HEAD)
+        short=${short:0:8}
+
+        cd "$repo"
+
         set_version_dev || test_error "set_version_dev failed"
-        echo "$v_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-h[0-9a-f]+' || \
+        [ "$v_version" = "1.2.3-1-h${short}" ] || \
             test_error "invalid dev version: '$v_version'"
+        persisted=$(cat "$VOLUND_VAR_DIR/var.v_version")
+        [ "$persisted" = "$v_version" ] || \
+            test_error "dev version not persisted: '$persisted'"
 
-        set +e
-        volund_repo_is_dirty
-        dirty=$?
-        set -e
+        set_version_rc || test_error "set_version_rc failed"
+        [ "$v_version" = "1.2.3-1" ] || \
+            test_error "invalid rc version: '$v_version'"
+        persisted=$(cat "$VOLUND_VAR_DIR/var.v_version")
+        [ "$persisted" = "$v_version" ] || \
+            test_error "rc version not persisted: '$persisted'"
 
-        if [ "$dirty" -eq 0 ]; then
-            set +e
-            volund_version_rc >/dev/null 2>&1
-            rc=$?
-            set -e
-            [ "$rc" -ne 0 ] || test_error "volund_version_rc should fail when dirty"
-            set +e
-            volund_version_release >/dev/null 2>&1
-            rc=$?
-            set -e
-            [ "$rc" -ne 0 ] || test_error "volund_version_release should fail when dirty"
-        else
-            set_version_rc || test_error "set_version_rc failed"
-            echo "$v_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' || \
-                test_error "invalid rc version: '$v_version'"
-
-            set_version_release || test_error "set_version_release failed"
-            echo "$v_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+$' || \
-                test_error "invalid release version: '$v_version'"
-        fi
+        set_version_release || test_error "set_version_release failed"
+        [ "$v_version" = "1.2.3" ] || \
+            test_error "invalid release version: '$v_version'"
+        persisted=$(cat "$VOLUND_VAR_DIR/var.v_version")
+        [ "$persisted" = "$v_version" ] || \
+            test_error "release version not persisted: '$persisted'"
     ) || failed=1
     cleanup_test_volund $failed
     if [ $failed -eq 0 ]; then

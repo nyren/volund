@@ -11,7 +11,7 @@ if ! declare -F volund_cmd >/dev/null 2>&1; then
     exit 1
 fi
 
-volund_image _tools "ghcr.io/nyren/volund-rc/volund-builder-tools:0.4.0-0"
+volund_image _tools "ghcr.io/nyren/volund-rc/volund-builder-tools:0.5.0-1"
 
 _volund_tools_run() {
     volund_with -e VOLUND_LOG_LEVEL -e USER -- \
