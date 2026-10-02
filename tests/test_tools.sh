@@ -712,14 +712,15 @@ test_volund_git_require_credentials() {
 
         volund_git_require_credentials
 
-        git remote set-url origin https://example.invalid/acme/app.git
+        # scp-style URL with a user other than "git"
+        git remote set-url origin alice@example.invalid:acme/app.git
         local out rc
         set +e
         out=$(volund_git_require_credentials 2>&1)
         rc=$?
         set -e
-        [ "$rc" -ne 0 ] || test_error "https upstream succeeded without credentials"
-        echo "$out" | grep -q 'https://example.invalid/acme/app.git: VOLUND_GIT_CREDENTIALS is unset' || \
+        [ "$rc" -ne 0 ] || test_error "scp-style upstream succeeded without credentials"
+        echo "$out" | grep -q 'alice@example.invalid:acme/app.git: VOLUND_GIT_CREDENTIALS is unset' || \
             test_error "missing credentials error: $out"
 
         VOLUND_GIT_CREDENTIALS=auto volund_git_require_credentials

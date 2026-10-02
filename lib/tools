@@ -201,7 +201,7 @@ volund_git_require_credentials() {
         volund_error "volund_git_require_credentials: no url for $remote"
 
     case "$url" in
-        git@*:*|ssh://*|https://*|http://*|git://*)
+        *@*:*|ssh://*|https://*|http://*|git://*)
             ;;
         *)
             return 0
