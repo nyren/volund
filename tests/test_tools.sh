@@ -539,8 +539,15 @@ test_volund_git_commit_and_push() {
         unset VOLUND_GIT_CREDENTIALS
         _git_test_repo
 
-        volund_git -C "$repo" commit -m "test commit"
-        volund_git -C "$repo" push origin HEAD
+        local commit_err push_err
+        commit_err=$(volund_git -C "$repo" commit -m "test commit" 2>&1 >/dev/null) || \
+            test_error "commit failed"
+        echo "$commit_err" | grep -q 'VOLUND_GIT_CREDENTIALS is unset' && \
+            test_error "commit warned about credentials: $commit_err"
+        push_err=$(volund_git -C "$repo" push origin HEAD 2>&1 >/dev/null) || \
+            test_error "push failed"
+        echo "$push_err" | grep -q 'VOLUND_GIT_CREDENTIALS is unset. Credentials not forwarded' || \
+            test_error "push missing credentials warning: $push_err"
 
         log=$(git --git-dir="$bare" log -1 --format='%an <%ae> %s' main)
         echo "$log" | grep -q 'VolundTest <volund@test.example> test commit' || {
@@ -690,6 +697,41 @@ test_volund_helm_requires_home() {
     fi
 }
 
+test_volund_git_require_credentials() {
+    local TEST_NAME="volund_git_require_credentials"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        unset VOLUND_GIT_CREDENTIALS
+        _git_test_repo
+        git -C "$repo" commit -q -m "add VERSION"
+        git -C "$repo" push -u origin main
+        cd "$repo"
+
+        volund_git_require_credentials
+
+        git remote set-url origin https://example.invalid/acme/app.git
+        local out rc
+        set +e
+        out=$(volund_git_require_credentials 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "https upstream succeeded without credentials"
+        echo "$out" | grep -q 'https://example.invalid/acme/app.git: VOLUND_GIT_CREDENTIALS is unset' || \
+            test_error "missing credentials error: $out"
+
+        VOLUND_GIT_CREDENTIALS=auto volund_git_require_credentials
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 test_volund_git_auto_push() {
     local TEST_NAME="volund_git auto credentials local push"
     start_test "$TEST_NAME"
@@ -700,7 +742,11 @@ test_volund_git_auto_push() {
         _git_test_repo
 
         volund_git -C "$repo" commit -m "test commit"
-        VOLUND_GIT_CREDENTIALS=auto volund_git -C "$repo" push origin HEAD
+        local push_err
+        push_err=$(VOLUND_GIT_CREDENTIALS=auto volund_git -C "$repo" push origin HEAD 2>&1 >/dev/null) || \
+            test_error "auto push failed"
+        echo "$push_err" | grep -q 'VOLUND_GIT_CREDENTIALS is unset' && \
+            test_error "auto push warned about credentials: $push_err"
 
         log=$(git --git-dir="$bare" log -1 --format='%s' main)
         echo "$log" | grep -q 'test commit' || {
@@ -731,6 +777,7 @@ test_volund_git_commit_and_push
 test_volund_git_known_hosts_prepared_home
 test_volund_git_requires_home
 test_volund_helm_requires_home
+test_volund_git_require_credentials
 test_volund_git_auto_push
 
 end_test_summary

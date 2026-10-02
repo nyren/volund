@@ -203,6 +203,8 @@ bump_version() {
         volund_error "$branch: not an official branch (main, master, or release-*)"
     fi
 
+    volund_git_require_credentials
+
     volund_version_increment "$component"
 
     volund_git add VERSION

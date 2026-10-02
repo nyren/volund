@@ -506,6 +506,56 @@ test_microservice_bump_version() {
     fi
 }
 
+test_microservice_bump_version_requires_credentials() {
+    local TEST_NAME="bump_version requires credentials for network upstream"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+
+        local repo bare out rc log
+        repo="$VOLUND_TMP_DIR/bump-repo"
+        bare="$VOLUND_TMP_DIR/bump-bare.git"
+        mkdir -p "$repo"
+        git init -q -b main "$repo"
+        git init -q --bare "$bare"
+        repo=$(cd "$repo" && pwd)
+        bare=$(cd "$bare" && pwd)
+        printf '1.2.3\n' > "$repo/VERSION"
+        git -C "$repo" add VERSION
+        GIT_AUTHOR_NAME=VolundTest \
+            GIT_AUTHOR_EMAIL=volund@test.example \
+            GIT_COMMITTER_NAME=VolundTest \
+            GIT_COMMITTER_EMAIL=volund@test.example \
+            git -C "$repo" commit -q -m "add VERSION"
+        git -C "$repo" remote add origin "$bare"
+        git -C "$repo" push -u origin main
+        git -C "$repo" remote set-url origin https://example.invalid/acme/app.git
+
+        cd "$repo"
+        unset VOLUND_GIT_CREDENTIALS
+        set +e
+        out=$(bump_version 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "bump_version succeeded without credentials"
+        echo "$out" | grep -q 'https://example.invalid/acme/app.git: VOLUND_GIT_CREDENTIALS is unset' || \
+            test_error "missing credentials error: $out"
+        [ "$(cat VERSION)" = "1.2.3" ] || \
+            test_error "VERSION changed: $(cat VERSION)"
+        log=$(git log -1 --format='%s')
+        [ "$log" = "add VERSION" ] || \
+            test_error "unexpected commit: $log"
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 # Run all
 test_microservice_set_version_dev
 test_microservice_repo_charts_only
@@ -517,6 +567,7 @@ test_microservice_chart_path_build_metadata
 test_microservice_publish_charts
 test_microservice_publish_images
 test_microservice_bump_version
+test_microservice_bump_version_requires_credentials
 
 end_test_summary
 

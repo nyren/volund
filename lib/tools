@@ -139,6 +139,10 @@ volund_git() {
     local want_creds=0
     case "$cred" in
         '')
+            if _volund_git_is_remote "$@"; then
+                volund_log warning "VOLUND_GIT_CREDENTIALS is unset. Credentials not forwarded to git command." \
+                    "$(volund_color bold 'Set VOLUND_GIT_CREDENTIALS=auto or always')"
+            fi
             ;;
         auto)
             _volund_git_is_remote "$@" && want_creds=1
@@ -183,6 +187,39 @@ volund_git() {
     fi
 
     volund_with "${extra[@]}" -- volund_cmd _tools git "${git_flags[@]}" "$@"
+}
+
+# Error when the upstream URL needs credentials and VOLUND_GIT_CREDENTIALS is unset
+volund_git_require_credentials() {
+    local upstream remote url cred
+    upstream=$(volund_git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}') || \
+        volund_error "volund_git_require_credentials: no upstream"
+    remote=${upstream%%/*}
+    [ -n "$remote" ] || \
+        volund_error "volund_git_require_credentials: no upstream"
+    url=$(volund_git remote get-url "$remote") || \
+        volund_error "volund_git_require_credentials: no url for $remote"
+
+    case "$url" in
+        git@*:*|ssh://*|https://*|http://*|git://*)
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    cred="${VOLUND_GIT_CREDENTIALS:-}"
+    case "$cred" in
+        auto|always)
+            return 0
+            ;;
+        '')
+            volund_error "$url: VOLUND_GIT_CREDENTIALS is unset (set auto or always)"
+            ;;
+        *)
+            volund_error "$url: VOLUND_GIT_CREDENTIALS invalid value '$cred' (allowed: auto, always)"
+            ;;
+    esac
 }
 
 # vi: filetype=sh expandtab sw=4
