@@ -19,6 +19,7 @@ _volund_tools_run() {
 }
 
 _volund_helm_run() {
+    [ -n "$HOME" ] || volund_error "volund_helm: HOME is not set"
     local -a runtime_args=()
 
     local helm_config="${HELM_CONFIG_HOME:-${HOME}/.config/helm}"
@@ -149,6 +150,8 @@ volund_git() {
             volund_error "VOLUND_GIT_CREDENTIALS: invalid value '$cred' (allowed: auto, always)"
             ;;
     esac
+
+    [ -n "$HOME" ] || volund_error "volund_git: HOME is not set"
 
     local -a extra=(
         -e HOME

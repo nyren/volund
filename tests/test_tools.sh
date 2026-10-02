@@ -556,6 +556,140 @@ test_volund_git_commit_and_push() {
     fi
 }
 
+# ls-remote via a stand-in ssh that records the passwd home and the
+# known_hosts path OpenSSH would use. The stand-in exits 1; the result file
+# is the assertion source.
+_volund_git_ssh_probe() {
+    local out="$1"
+    local probe
+    probe="$(mktemp -p "$VOLUND_TMP_DIR" ssh-probe.XXXXXX)"
+    cat > "$probe" << EOF
+#!/bin/sh
+uid=\$(id -u)
+phome=\$(awk -F: -v u="\$uid" '\$3==u {print \$6; exit}' /etc/passwd)
+{
+    printf 'passwd_home=%s\n' "\$phome"
+    printf 'env_home=%s\n' "\${HOME-}"
+    if [ -f "\$phome/.ssh/known_hosts" ]; then
+        printf 'marker=%s\n' "\$(cat "\$phome/.ssh/known_hosts")"
+    else
+        printf 'marker=MISSING\n'
+    fi
+    ssh -G git@example.test 2>/dev/null | awk '/^userknownhostsfile /{print; exit}'
+} > "$out"
+exit 1
+EOF
+    chmod 755 "$probe"
+    probe="$(cd "$(dirname "$probe")" && pwd)/$(basename "$probe")"
+    unset GIT_SSH_COMMAND
+    set +e
+    volund_git -c core.sshCommand="$probe" ls-remote git@example.test:org/repo >/dev/null 2>&1
+    set -e
+    [ -s "$out" ] || test_error "ssh probe did not run"
+}
+
+test_volund_git_known_hosts_prepared_home() {
+    local TEST_NAME="volund_git ssh known_hosts follows prepared HOME"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    local home real_home xdg_data xdg_config
+    home="$(mktemp -d /tmp/volund-home.XXXXXX)"
+    # Podman stores images under $HOME. Pin the real XDG dirs before HOME
+    # points at the fixture, or the runtime looks for its storage there.
+    real_home="${HOME}"
+    xdg_data="${XDG_DATA_HOME:-$real_home/.local/share}"
+    xdg_config="${XDG_CONFIG_HOME:-$real_home/.config}"
+    (
+        volund_clean
+        mkdir -p "$home/.ssh"
+        printf 'volund-known-hosts-marker\n' > "$home/.ssh/known_hosts"
+        export XDG_DATA_HOME="$xdg_data"
+        export XDG_CONFIG_HOME="$xdg_config"
+        export HOME="$home"
+
+        local out line passwd_home env_home marker kh
+        out="$VOLUND_TMP_DIR/ssh-probe.out"
+        out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
+        VOLUND_GIT_CREDENTIALS=auto _volund_git_ssh_probe "$out"
+
+        passwd_home=
+        env_home=
+        marker=
+        kh=
+        while IFS= read -r line; do
+            case "$line" in
+                passwd_home=*) passwd_home=${line#passwd_home=} ;;
+                env_home=*) env_home=${line#env_home=} ;;
+                marker=*) marker=${line#marker=} ;;
+                userknownhostsfile\ *) kh=${line#userknownhostsfile } ;;
+            esac
+        done < "$out"
+        [ "$passwd_home" = "$home" ] || test_error "passwd home is '$passwd_home'"
+        [ "$env_home" = "$home" ] || test_error "container HOME is '$env_home'"
+        [ "$marker" = "volund-known-hosts-marker" ] || test_error "known_hosts marker is '$marker'"
+        [ "$kh" = "$home/.ssh/known_hosts $home/.ssh/known_hosts2" ] || \
+            test_error "ssh known_hosts path is '$kh'"
+    ) || failed=1
+    rm -rf "$home"
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_volund_git_requires_home() {
+    local TEST_NAME="volund_git requires HOME"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        unset HOME
+        local out rc
+        set +e
+        out=$(volund_git status 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "volund_git succeeded without HOME"
+        echo "$out" | grep -q 'volund_git: HOME is not set' || \
+            test_error "missing HOME error: $out"
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_volund_helm_requires_home() {
+    local TEST_NAME="volund_helm requires HOME"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        unset HOME
+        local out rc
+        set +e
+        out=$(volund_helm_package . 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "volund_helm_package succeeded without HOME"
+        echo "$out" | grep -q 'volund_helm: HOME is not set' || \
+            test_error "missing HOME error: $out"
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 test_volund_git_auto_push() {
     local TEST_NAME="volund_git auto credentials local push"
     start_test "$TEST_NAME"
@@ -564,10 +698,9 @@ test_volund_git_auto_push() {
     (
         volund_clean
         _git_test_repo
-        export VOLUND_GIT_CREDENTIALS=auto
 
         volund_git -C "$repo" commit -m "test commit"
-        volund_git -C "$repo" push origin HEAD
+        VOLUND_GIT_CREDENTIALS=auto volund_git -C "$repo" push origin HEAD
 
         log=$(git --git-dir="$bare" log -1 --format='%s' main)
         echo "$log" | grep -q 'test commit' || {
@@ -595,6 +728,9 @@ test_repo_is_dirty_is_clean
 test_helm_package
 test_helm_push_pull
 test_volund_git_commit_and_push
+test_volund_git_known_hosts_prepared_home
+test_volund_git_requires_home
+test_volund_helm_requires_home
 test_volund_git_auto_push
 
 end_test_summary

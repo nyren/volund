@@ -96,6 +96,38 @@ test_cmd_real() {
     fi
 }
 
+test_passwd_entry_without_home() {
+    local TEST_NAME="passwd entry skipped when HOME is unset"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        volund_image sh "$TEST_IMAGE"
+        unset HOME
+
+        local err home_in
+        err="$(mktemp -p "$VOLUND_TMP_DIR" passwd-err.XXXXXX)"
+        # $3 and $6 are awk fields, evaluated in the container.
+        # shellcheck disable=SC2016
+        home_in=$(volund_cmd sh awk -F: -v u="$(id -u)" '$3==u {print $6; exit}' /etc/passwd 2>"$err")
+        [ "$home_in" = "$PWD" ] || {
+            echo "container home is '$home_in', workdir is '$PWD'"
+            exit 1
+        }
+        grep -q 'HOME is not set, podman will use workdir as home directory' "$err" || {
+            echo "missing HOME warning: $(cat "$err")"
+            exit 1
+        }
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 test_script_real() {
     local TEST_NAME="volund_script"
     start_test "$TEST_NAME"
@@ -428,6 +460,7 @@ test_volund_color() {
 test_var_prefix_and_naming
 test_load_save_no_export
 test_cmd_real
+test_passwd_entry_without_home
 test_script_real
 test_prefix_change_and_validation_on_load
 test_volund_with

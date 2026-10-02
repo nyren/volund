@@ -279,6 +279,14 @@ _volund_build_run_args() {
         rtname="$(basename "$runtime")"
         if [[ "$rtname" == podman* ]]; then
             _volund_run_out+=(--userns=keep-id)
+            # Podman use workdir as passwd entry home directory, use $HOME instead.
+            # USERNAME, UID, GID, and NAME are Podman tokens, not shell variables.
+            if [ -n "$HOME" ]; then
+                # shellcheck disable=SC2016
+                _volund_run_out+=(--passwd-entry='$USERNAME:*:$UID:$GID:$NAME:'"$HOME"':/bin/sh')
+            else
+                volund_log warning "HOME is not set, podman will use workdir as home directory"
+            fi
         fi
 
         _volund_run_out+=(--user "$(id -u):$(id -g)" --entrypoint "")
