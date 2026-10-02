@@ -7,22 +7,22 @@ TEST_FAILED=0
 start_test() {
     local name="$1"
     TEST_COUNT=$((TEST_COUNT + 1))
-    echo "TEST $TEST_COUNT: $name"
+    volund_msg "$(volund_color light grey -- "TEST $TEST_COUNT:")" "$name"
 }
 
 pass_test() {
     local name="$1"
-    echo "PASS $TEST_COUNT: $name"
+    volund_msg "$(volund_color bold -- "PASS $TEST_COUNT:")" "$name"
 }
 
 fail_test() {
     local name="$1"
-    echo "FAIL $TEST_COUNT: $name" >&2
+    volund_msg "$(volund_color bold red -- "FAIL $TEST_COUNT:")" "$name"
     TEST_FAILED=$((TEST_FAILED + 1))
 }
 
 end_test_summary() {
-    echo "DONE: PASS=$((TEST_COUNT - TEST_FAILED)) FAIL=$TEST_FAILED"
+    volund_msg "$(volund_color bold -- "DONE: PASS=$((TEST_COUNT - TEST_FAILED)) FAIL=$TEST_FAILED")"
     [ $TEST_FAILED -eq 0 ] || exit 1
 }
 
