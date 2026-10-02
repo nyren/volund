@@ -175,6 +175,7 @@ volund_git() {
             -e VOLUND_GIT_PASSWORD
             -e VOLUND_GIT_TOKEN
         )
+        [ -f "$HOME/.ssh/config" ] && extra+=(-v "$HOME/.ssh/config:$HOME/.ssh/config")
         [ -f "$HOME/.ssh/known_hosts" ] && extra+=(-v "$HOME/.ssh/known_hosts:$HOME/.ssh/known_hosts")
         [ -f "$HOME/.netrc" ] && extra+=(-v "$HOME/.netrc:$HOME/.netrc")
         if [ -S "${SSH_AUTH_SOCK:-}" ]; then
