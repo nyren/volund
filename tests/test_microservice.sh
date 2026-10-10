@@ -49,6 +49,35 @@ _ms_version_repo() {
         git -C "$repo" commit -q -m "unrelated"
 }
 
+# VERSION committed on main and pushed to an absolute bare origin.
+# $3 is the VERSION string (default 1.2.3). Origin is stored as an absolute
+# path so volund_git can push it from the tools container.
+_ms_pushed_repo() {
+    local repo="$1" bare="$2" version="${3:-1.2.3}"
+    local repo_abs bare_abs
+    mkdir -p "$repo"
+    git init -q -b main "$repo"
+    git init -q --bare "$bare"
+    repo_abs=$(cd "$repo" && pwd)
+    bare_abs=$(cd "$bare" && pwd)
+    printf '%s\n' "$version" > "$repo_abs/VERSION"
+    git -C "$repo_abs" add VERSION
+    GIT_AUTHOR_NAME=VolundTest \
+        GIT_AUTHOR_EMAIL=volund@test.example \
+        GIT_COMMITTER_NAME=VolundTest \
+        GIT_COMMITTER_EMAIL=volund@test.example \
+        git -C "$repo_abs" commit -q -m "add VERSION"
+    git -C "$repo_abs" remote add origin "$bare_abs"
+    git -C "$repo_abs" push -q -u origin main
+}
+
+_ms_git_identity() {
+    export GIT_AUTHOR_NAME=VolundTest
+    export GIT_AUTHOR_EMAIL=volund@test.example
+    export GIT_COMMITTER_NAME=VolundTest
+    export GIT_COMMITTER_EMAIL=volund@test.example
+}
+
 test_microservice_set_version_dev() {
     local TEST_NAME="set_version_dev produce valid version"
     start_test "$TEST_NAME"
@@ -556,6 +585,184 @@ test_microservice_bump_version_requires_credentials() {
     fi
 }
 
+test_microservice_tag_release() {
+    local TEST_NAME="tag_release pushes annotated v tag for the release commit"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
+    (
+        volund_clean
+        unset VOLUND_GIT_CREDENTIALS
+
+        local repo bare head subject out rc
+        repo="$VOLUND_TMP_DIR/tag-repo"
+        bare="$VOLUND_TMP_DIR/tag-bare.git"
+        _ms_pushed_repo "$repo" "$bare"
+        bare=$(cd "$bare" && pwd)
+        cd "$repo"
+        _ms_git_identity
+        head=$(git rev-parse HEAD)
+
+        set_version_release
+        [ "$v_version" = "1.2.3" ] || \
+            test_error "v_version is '$v_version'"
+
+        tag_release
+
+        [ "$(git rev-parse HEAD)" = "$head" ] || \
+            test_error "HEAD moved"
+        [ "$(cat VERSION)" = "1.2.3" ] || \
+            test_error "VERSION changed: $(cat VERSION)"
+        [ "$(git --git-dir="$bare" cat-file -t v1.2.3)" = "tag" ] || \
+            test_error "bare tag is not an annotated tag"
+        [ "$(git --git-dir="$bare" rev-parse 'v1.2.3^{}')" = "$head" ] || \
+            test_error "tag does not point at the release commit"
+        subject=$(git --git-dir="$bare" for-each-ref --format='%(contents:subject)' refs/tags/v1.2.3)
+        [ "$subject" = "1.2.3" ] || \
+            test_error "tag message is '$subject'"
+
+        set +e
+        out=$(tag_release 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "second tag_release succeeded"
+        echo "$out" | grep -q 'v1.2.3: tag already exists' || \
+            test_error "missing existing-tag error: $out"
+        [ "$(git --git-dir="$bare" rev-parse 'v1.2.3^{}')" = "$head" ] || \
+            test_error "tag moved on second call"
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_microservice_tag_release_rejects_rc_version() {
+    local TEST_NAME="tag_release rejects v_version that is not the release version"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
+    (
+        volund_clean
+        unset VOLUND_GIT_CREDENTIALS
+
+        local repo bare out rc
+        repo="$VOLUND_TMP_DIR/tag-repo"
+        bare="$VOLUND_TMP_DIR/tag-bare.git"
+        _ms_pushed_repo "$repo" "$bare"
+        bare=$(cd "$bare" && pwd)
+        cd "$repo"
+        _ms_git_identity
+        v_version="1.2.3-1"
+
+        set +e
+        out=$(tag_release 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "rc v_version was tagged"
+        echo "$out" | grep -q 'v_version 1.2.3-1 does not match release version 1.2.3' || \
+            test_error "missing version mismatch: $out"
+        if git show-ref --verify --quiet refs/tags/v1.2.3 || \
+            git --git-dir="$bare" show-ref --verify --quiet refs/tags/v1.2.3; then
+            test_error "tag exists after rejected rc version"
+        fi
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_microservice_tag_release_requires_credentials() {
+    local TEST_NAME="tag_release requires credentials for network upstream"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
+    (
+        volund_clean
+        unset VOLUND_GIT_CREDENTIALS
+
+        local repo bare out rc
+        repo="$VOLUND_TMP_DIR/tag-repo"
+        bare="$VOLUND_TMP_DIR/tag-bare.git"
+        _ms_pushed_repo "$repo" "$bare"
+        bare=$(cd "$bare" && pwd)
+        cd "$repo"
+        _ms_git_identity
+        set_version_release
+        git remote set-url origin https://example.invalid/acme/app.git
+
+        set +e
+        out=$(tag_release 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "tag_release succeeded without credentials"
+        echo "$out" | grep -q 'https://example.invalid/acme/app.git: VOLUND_GIT_CREDENTIALS is unset' || \
+            test_error "missing credentials error: $out"
+        if git show-ref --verify --quiet refs/tags/v1.2.3; then
+            test_error "local tag created without credentials"
+        fi
+        [ "$(cat VERSION)" = "1.2.3" ] || \
+            test_error "VERSION changed: $(cat VERSION)"
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_microservice_tag_release_rejects_prerelease_file() {
+    local TEST_NAME="tag_release rejects a prerelease VERSION file"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
+    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
+    (
+        volund_clean
+        unset VOLUND_GIT_CREDENTIALS
+
+        local repo bare out rc
+        repo="$VOLUND_TMP_DIR/tag-repo"
+        bare="$VOLUND_TMP_DIR/tag-bare.git"
+        _ms_pushed_repo "$repo" "$bare" "1.2.3-1"
+        bare=$(cd "$bare" && pwd)
+        cd "$repo"
+        _ms_git_identity
+        v_version="1.2.3-1"
+
+        set +e
+        out=$(tag_release 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -ne 0 ] || test_error "prerelease VERSION was tagged"
+        echo "$out" | grep -q 'invalid release version, prerelease suffix not allowed' || \
+            test_error "missing prerelease error: $out"
+        if git show-ref --verify --quiet refs/tags/v1.2.3-1 || \
+            git --git-dir="$bare" show-ref --verify --quiet refs/tags/v1.2.3-1; then
+            test_error "tag exists after rejected prerelease VERSION"
+        fi
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 # Run all
 test_microservice_set_version_dev
 test_microservice_repo_charts_only
@@ -568,6 +775,10 @@ test_microservice_publish_charts
 test_microservice_publish_images
 test_microservice_bump_version
 test_microservice_bump_version_requires_credentials
+test_microservice_tag_release
+test_microservice_tag_release_rejects_rc_version
+test_microservice_tag_release_requires_credentials
+test_microservice_tag_release_rejects_prerelease_file
 
 end_test_summary
 

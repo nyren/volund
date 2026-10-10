@@ -212,6 +212,46 @@ bump_version() {
     volund_git push
 }
 
+# Tag the checked-out commit as v$v_version and push that tag.
+tag_release() {
+    local branch version upstream remote tag existing
+    branch=$(volund_repo_get_branch)
+    [ "$branch" ] || \
+        volund_error "failed to get current git branch"
+
+    volund_repo_is_clean || \
+        volund_error "$branch: modified files present"
+
+    volund_repo_is_uptodate || \
+        volund_error "$branch: local branch not up-to-date with upstream"
+
+    [ "$v_version" ] || \
+        volund_error "version not defined"
+    version=$(volund_version_release) || exit
+    [ "$v_version" = "$version" ] || \
+        volund_error "v_version $v_version does not match release version $version"
+
+    volund_git_require_credentials
+
+    upstream=$(volund_git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}') || \
+        volund_error "tag_release: no upstream"
+    remote=${upstream%%/*}
+    [ -n "$remote" ] || \
+        volund_error "tag_release: no upstream"
+
+    tag="v${v_version}"
+    existing=$(volund_git ls-remote --tags "$remote" "refs/tags/${tag}") || \
+        volund_error "tag_release: failed to list tags"
+    [ -z "$existing" ] || \
+        volund_error "$tag: tag already exists"
+    if volund_git show-ref --verify --quiet "refs/tags/${tag}"; then
+        volund_error "$tag: tag already exists"
+    fi
+
+    volund_git -c tag.gpgsign=false tag -a "$tag" -m "$v_version"
+    volund_git push "$remote" "refs/tags/${tag}:refs/tags/${tag}"
+}
+
 # Publish Release Candidate of latest commit
 manual_rc() {
     volund_main        \
@@ -224,7 +264,7 @@ manual_rc() {
         publish
 }
 
-# Release project based on latest commit and bump version
+# Tag the current commit, publish that release, then bump version
 manual_release() {
     volund_main             \
         clean               \
@@ -233,8 +273,9 @@ manual_release() {
         set_repo_release    \
         build               \
         verify              \
-        bump_version        \
-        publish
+        tag_release         \
+        publish             \
+        bump_version
 }
 
 # vi: filetype=sh expandtab sw=4
