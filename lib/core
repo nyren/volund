@@ -232,6 +232,7 @@ volund_runtime() {
         echo "$binary"
         return 0
     fi
+    volund_log info "runtime $*"
     "$binary" "$@"
 }
 
