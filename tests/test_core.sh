@@ -128,6 +128,45 @@ test_passwd_entry_without_home() {
     fi
 }
 
+test_docker_passwd_files() {
+    local TEST_NAME="docker runtime gets passwd/group entry for current user"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        volund_image sh "$TEST_IMAGE"
+
+        # Emulate docker: a runtime named "docker" that, like docker, does
+        # not add a passwd entry for --user.
+        local bindir
+        bindir="$(mktemp -d -p "$VOLUND_TMP_DIR" bin.XXXXXX)"
+        cat > "$bindir/docker" <<'EOF'
+#!/bin/sh
+[ "$1" = run ] && { shift; exec podman run --passwd=false "$@"; }
+exec podman "$@"
+EOF
+        chmod 755 "$bindir/docker"
+        export VOLUND_RUNTIME="$bindir/docker"
+
+        local out expected
+        # $6 is an awk field, evaluated in the container.
+        # shellcheck disable=SC2016
+        out=$(volund_cmd sh sh -c 'echo "$(id -un):$(id -gn):$(awk -F: -v u="$(id -u)" '\''$3==u {print $6}'\'' /etc/passwd)"')
+        expected="$(id -un):$(id -gn):$HOME"
+        [ "$out" = "$expected" ] || {
+            echo "got '$out', expected '$expected'"
+            exit 1
+        }
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 test_script_real() {
     local TEST_NAME="volund_script"
     start_test "$TEST_NAME"
@@ -461,6 +500,7 @@ test_var_prefix_and_naming
 test_load_save_no_export
 test_cmd_real
 test_passwd_entry_without_home
+test_docker_passwd_files
 test_script_real
 test_prefix_change_and_validation_on_load
 test_volund_with

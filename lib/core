@@ -255,6 +255,36 @@ volund_with() {
     "$@"
 }
 
+# Write passwd/group files for the current user into VOLUND_TMP_DIR.
+# Home directory is $HOME, falling back to $1 (workdir) like podman does.
+_volund_write_passwd_files() {
+    local workdir="$1"
+    local uid gid user group home tmp
+    uid="$(id -u)"
+    gid="$(id -g)"
+    user="$(id -un 2>/dev/null)" || user="${USER:-volund}"
+    group="$(id -gn 2>/dev/null)" || group="$user"
+    home="${HOME:-$workdir}"
+    [ -n "${HOME:-}" ] || \
+        volund_log warning "HOME is not set, using workdir as home directory"
+
+    mkdir -p "$VOLUND_TMP_DIR"
+    # Write via temp file + rename as concurrent volund calls may share these files
+    tmp="$(mktemp -p "$VOLUND_TMP_DIR" passwd.XXXXXX)"
+    printf 'root:x:0:0:root:/root:/bin/sh\n%s:x:%s:%s:%s:%s:/bin/sh\n' \
+        "$user" "$uid" "$gid" "$user" "$home" > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$VOLUND_TMP_DIR/passwd"
+
+    tmp="$(mktemp -p "$VOLUND_TMP_DIR" group.XXXXXX)"
+    {
+        echo 'root:x:0:'
+        [ "$gid" = 0 ] || echo "$group:x:$gid:"
+    } > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$VOLUND_TMP_DIR/group"
+}
+
 # Build docker/podman run arguments into array named by $3 (nameref).
 # Optional $4: name of array with per-call extra flags.
 # If VOLUND_RUNTIME_ARGS is set, built-in run/mount/user flags are omitted
@@ -288,6 +318,14 @@ _volund_build_run_args() {
             else
                 volund_log warning "HOME is not set, podman will use workdir as home directory"
             fi
+        elif [ "$(id -u)" != 0 ]; then
+            # Docker has no --passwd-entry. Mount minimal passwd/group files so
+            # tools that look up the current user (ssh, git) work.
+            _volund_write_passwd_files "$workdir"
+            _volund_run_out+=(
+                -v "$VOLUND_TMP_DIR/passwd:/etc/passwd:ro"
+                -v "$VOLUND_TMP_DIR/group:/etc/group:ro"
+            )
         fi
 
         _volund_run_out+=(--user "$(id -u):$(id -g)" --entrypoint "")
