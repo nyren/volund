@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 FREEZE_VERSION="0.2.2"
 FREEZE_DIGEST="012fdbdd16c0c19570f9052aac34d16d93d7d0d3b565b05374cc59492f53539b"
 
-volund_image sh ghcr.io/nyren/volund-rc/volund-builder-sh:0.2.0-1
+volund_image sh ghcr.io/nyren/volund-release/volund-builder-sh:0.3.0
 
 volund_default clean init lint build verify
 
