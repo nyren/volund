@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
   pages: write
   id-token: write
 
@@ -33,29 +34,54 @@ jobs:
       - name: Build
         run: ./build.sh build
 
-      - name: Verify
-        run: ./build.sh verify
-
-      - name: Prepare Pages artifact
-        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        run: |
-          mkdir -p _site
-          cp .build/example-core.svg _site/example-core.svg
-
-      - name: Upload Pages artifact
-        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        uses: actions/upload-pages-artifact@v5
+      - name: Upload SVG
+        uses: actions/upload-artifact@v7
         with:
-          path: _site
+          name: example-core-svg
+          path: .build/example-core.svg
+
+  # Verify with both podman and docker
+  test:
+    name: verify (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [podman, docker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Clean
+        run: ./build.sh clean
+
+      - name: Init
+        run: ./build.sh init
+
+      - name: Verify
+        env:
+          VOLUND_RUNTIME: ${{ matrix.runtime }}
+        run: ./build.sh verify
 
   deploy:
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Download SVG
+        uses: actions/download-artifact@v8
+        with:
+          name: example-core-svg
+          path: _site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
