@@ -83,9 +83,6 @@ test_microservice_set_version_dev() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
-    # Absolute paths: set_version_dev runs with cwd inside the fixture repo.
-    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
-    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     v_version=
     (
         volund_clean
@@ -292,9 +289,6 @@ test_microservice_set_version_variants() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
-    # Absolute paths: set_version_* runs with cwd inside the fixture repo.
-    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
-    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     v_version=
     (
         volund_clean
@@ -590,8 +584,6 @@ test_microservice_tag_release() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
-    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
-    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     (
         volund_clean
         unset VOLUND_GIT_CREDENTIALS
@@ -646,8 +638,6 @@ test_microservice_tag_release_rejects_rc_version() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
-    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
-    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     (
         volund_clean
         unset VOLUND_GIT_CREDENTIALS
@@ -686,8 +676,6 @@ test_microservice_tag_release_requires_credentials() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
-    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
-    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     (
         volund_clean
         unset VOLUND_GIT_CREDENTIALS
@@ -728,8 +716,6 @@ test_microservice_tag_release_rejects_prerelease_file() {
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
-    VOLUND_VAR_DIR=$(cd "$VOLUND_VAR_DIR" && pwd)
-    VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     (
         volund_clean
         unset VOLUND_GIT_CREDENTIALS

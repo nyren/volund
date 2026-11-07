@@ -19,6 +19,14 @@ declare -g VOLUND_PROJECT_ROOT=""
 declare -g VOLUND_VAR_DIR=""
 declare -g VOLUND_TMP_DIR=""
 
+# Caller identity and the one passwd/group pair for this process.
+declare -g _VOLUND_UID=""
+declare -g _VOLUND_GID=""
+declare -g _VOLUND_USER=""
+declare -g _VOLUND_GROUP=""
+declare -g _VOLUND_PASSWD_FILE=""
+declare -g _VOLUND_GROUP_FILE=""
+
 # Call-scoped extras set by volund_with (not for direct use)
 declare -ga _VOLUND_WITH_ARGS=()
 
@@ -34,9 +42,12 @@ _volund_inc="$(dirname "${BASH_SOURCE[0]}")/../inc"
 #
 
 # Detect VOLUND_PROJECT_ROOT and set up VOLUND_VAR_DIR / TMP_DIR (unless already overridden).
+# PROJECT_ROOT is absolute, so the default var and tmp dirs are absolute too.
 _volund_detect_project_root() {
     if [ -z "${VOLUND_PROJECT_ROOT:-}" ]; then
         VOLUND_PROJECT_ROOT="$(pwd -P)"
+    elif [[ "$VOLUND_PROJECT_ROOT" != /* ]]; then
+        VOLUND_PROJECT_ROOT="$(cd "$VOLUND_PROJECT_ROOT" && pwd -P)"
     fi
     if [ -z "${VOLUND_VAR_DIR:-}" ]; then
         VOLUND_VAR_DIR="$VOLUND_PROJECT_ROOT/.volund"
@@ -255,34 +266,51 @@ volund_with() {
     "$@"
 }
 
-# Write passwd/group files for the current user into VOLUND_TMP_DIR.
-# Home directory is $HOME, falling back to $1 (workdir) like podman does.
-_volund_write_passwd_files() {
+# Same text for podman and docker. Home falls back to the workdir.
+_volund_warn_home_unset() {
+    volund_log warning "HOME is not set, will use workdir as home directory"
+}
+
+# uid, gid, and names do not change during a run.
+_volund_cache_caller() {
+    [ -n "$_VOLUND_UID" ] && return 0
+    _VOLUND_UID="$(id -u)"
+    _VOLUND_GID="$(id -g)"
+    _VOLUND_USER="$(id -un 2>/dev/null)" || _VOLUND_USER="${USER:-volund}"
+    _VOLUND_GROUP="$(id -gn 2>/dev/null)" || _VOLUND_GROUP="${USER:-volund}"
+}
+
+# One passwd file and one group file under VOLUND_TMP_DIR.
+# Later container commands mount the same paths. volund_clean removes them.
+_volund_ensure_id_files() {
     local workdir="$1"
-    local uid gid user group home tmp
-    uid="$(id -u)"
-    gid="$(id -g)"
-    user="$(id -un 2>/dev/null)" || user="${USER:-volund}"
-    group="$(id -gn 2>/dev/null)" || group="$user"
+    local home tmp
+    _volund_cache_caller
+    if [ -f "${_VOLUND_PASSWD_FILE:-}" ] && [ -f "${_VOLUND_GROUP_FILE:-}" ]; then
+        return 0
+    fi
     home="${HOME:-$workdir}"
-    [ -n "${HOME:-}" ] || \
-        volund_log warning "HOME is not set, using workdir as home directory"
+    [ -n "${HOME:-}" ] || _volund_warn_home_unset
 
     mkdir -p "$VOLUND_TMP_DIR"
-    # Write via temp file + rename as concurrent volund calls may share these files
-    tmp="$(mktemp -p "$VOLUND_TMP_DIR" passwd.XXXXXX)"
-    printf 'root:x:0:0:root:/root:/bin/sh\n%s:x:%s:%s:%s:%s:/bin/sh\n' \
-        "$user" "$uid" "$gid" "$user" "$home" > "$tmp"
+    tmp="$(mktemp -p "$VOLUND_TMP_DIR" passwd.XXXXXXXXX)"
+    if [ "$_VOLUND_UID" = 0 ]; then
+        printf '%s:x:0:%s:%s:%s:/bin/sh\n' \
+            "$_VOLUND_USER" "$_VOLUND_GID" "$_VOLUND_USER" "$home" > "$tmp"
+    else
+        printf 'root:x:0:0:root:/root:/bin/sh\n%s:x:%s:%s:%s:%s:/bin/sh\n' \
+            "$_VOLUND_USER" "$_VOLUND_UID" "$_VOLUND_GID" "$_VOLUND_USER" "$home" > "$tmp"
+    fi
     chmod 644 "$tmp"
-    mv -f "$tmp" "$VOLUND_TMP_DIR/passwd"
+    _VOLUND_PASSWD_FILE="$tmp"
 
-    tmp="$(mktemp -p "$VOLUND_TMP_DIR" group.XXXXXX)"
+    tmp="$(mktemp -p "$VOLUND_TMP_DIR" group.XXXXXXXXX)"
     {
         echo 'root:x:0:'
-        [ "$gid" = 0 ] || echo "$group:x:$gid:"
+        [ "$_VOLUND_GID" = 0 ] || echo "$_VOLUND_GROUP:x:$_VOLUND_GID:"
     } > "$tmp"
     chmod 644 "$tmp"
-    mv -f "$tmp" "$VOLUND_TMP_DIR/group"
+    _VOLUND_GROUP_FILE="$tmp"
 }
 
 # Build docker/podman run arguments into array named by $3 (nameref).
@@ -309,33 +337,22 @@ _volund_build_run_args() {
         # Volume-mount working directory
         _volund_run_out+=(-v "$VOLUND_PROJECT_ROOT:$VOLUND_PROJECT_ROOT" -w "$workdir")
 
-        # --userns=keep-id is a Podman-specific feature for rootless containers
-        # to keep the host UID/GID mapped inside the container. Docker does not
-        # support this flag (it uses different userns handling via daemon config
-        # or rootless mode).
         local rtname
         rtname="$(basename "$runtime")"
+        # keep-id maps the host uid into a rootless Podman container so it
+        # can write the project. Docker does not accept this flag.
         if [[ "$rtname" == podman* ]]; then
             _volund_run_out+=(--userns=keep-id)
-            # Podman use workdir as passwd entry home directory, use $HOME instead.
-            # USERNAME, UID, GID, and NAME are Podman tokens, not shell variables.
-            if [ -n "$HOME" ]; then
-                # shellcheck disable=SC2016
-                _volund_run_out+=(--passwd-entry='$USERNAME:*:$UID:$GID:$NAME:'"$HOME"':/bin/sh')
-            else
-                volund_log warning "HOME is not set, podman will use workdir as home directory"
-            fi
-        elif [ "$(id -u)" != 0 ]; then
-            # Docker has no --passwd-entry. Mount minimal passwd/group files so
-            # tools that look up the current user (ssh, git) work.
-            _volund_write_passwd_files "$workdir"
-            _volund_run_out+=(
-                -v "$VOLUND_TMP_DIR/passwd:/etc/passwd:ro"
-                -v "$VOLUND_TMP_DIR/group:/etc/group:ro"
-            )
         fi
+        # Same files for every command in this process. The content does
+        # not change, and nothing rewrites the paths after they are created.
+        _volund_ensure_id_files "$workdir"
+        _volund_run_out+=(
+            -v "$_VOLUND_PASSWD_FILE:/etc/passwd:ro"
+            -v "$_VOLUND_GROUP_FILE:/etc/group:ro"
+        )
 
-        _volund_run_out+=(--user "$(id -u):$(id -g)" --entrypoint "")
+        _volund_run_out+=(--user "$_VOLUND_UID:$_VOLUND_GID" --entrypoint "")
     fi
 
     # Inject persisted variables by value (read directly from .volund/var.*)
@@ -476,6 +493,7 @@ volund_script() {
 # Main entry point: create .volund if needed, load persisted vars, then run targets.
 volund_main() {
     mkdir -p "$VOLUND_VAR_DIR" "$VOLUND_TMP_DIR"
+    _volund_cache_caller
 
     _volund_load_persisted_vars
 
