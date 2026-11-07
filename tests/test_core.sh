@@ -167,6 +167,43 @@ EOF
     fi
 }
 
+test_selinux_label_disable() {
+    local TEST_NAME="run disables SELinux label separation"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        volund_image sh "$TEST_IMAGE"
+
+        local err
+        err=$(VOLUND_LOG_LEVEL=debug volund_cmd sh true 2>&1 >/dev/null) || {
+            echo "cmd failed: $err"
+            exit 1
+        }
+        echo "$err" | grep -F -q -- '--security-opt label=disable' || {
+            echo "missing --security-opt label=disable: $err"
+            exit 1
+        }
+
+        err=$(VOLUND_LOG_LEVEL=debug VOLUND_RUNTIME_ARGS='run --rm' \
+            volund_cmd sh true 2>&1 >/dev/null) || {
+            echo "VOLUND_RUNTIME_ARGS cmd failed: $err"
+            exit 1
+        }
+        if echo "$err" | grep -F -q -- '--security-opt'; then
+            echo "built-in --security-opt present with VOLUND_RUNTIME_ARGS: $err"
+            exit 1
+        fi
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
 test_script_real() {
     local TEST_NAME="volund_script"
     start_test "$TEST_NAME"
@@ -501,6 +538,7 @@ test_load_save_no_export
 test_cmd_real
 test_passwd_entry_without_home
 test_docker_passwd_files
+test_selinux_label_disable
 test_script_real
 test_prefix_change_and_validation_on_load
 test_volund_with
