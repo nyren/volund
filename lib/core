@@ -287,8 +287,9 @@ _volund_write_passwd_files() {
 
 # Build docker/podman run arguments into array named by $3 (nameref).
 # Optional $4: name of array with per-call extra flags.
-# If VOLUND_RUNTIME_ARGS is set, built-in run/mount/user flags are omitted
-# (the env value is expanded at invoke time); env injection and extras remain.
+# If VOLUND_RUNTIME_ARGS is set, built-in container runtime flags are
+# omitted (the env value is expanded at invoke time); env injection and
+# extras remain.
 _volund_build_run_args() {
     local runtime="$1"
     local workdir="$2"
@@ -300,6 +301,12 @@ _volund_build_run_args() {
     if [ -z "${VOLUND_RUNTIME_ARGS:-}" ]; then
         _volund_run_out=(run --rm)
 
+        # Bind mounts keep SELinux host labels such as user_home_t and
+        # ssh_home_t. container_t cannot read those. label=disable runs this
+        # container as spc_t and leaves the host labels unchanged.
+        _volund_run_out+=(--security-opt label=disable)
+
+        # Volume-mount working directory
         _volund_run_out+=(-v "$VOLUND_PROJECT_ROOT:$VOLUND_PROJECT_ROOT" -w "$workdir")
 
         # --userns=keep-id is a Podman-specific feature for rootless containers
