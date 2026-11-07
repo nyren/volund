@@ -96,8 +96,8 @@ test_cmd_real() {
     fi
 }
 
-test_passwd_entry_without_home() {
-    local TEST_NAME="passwd entry skipped when HOME is unset"
+test_container_home_without_home() {
+    local TEST_NAME="container home is the workdir when HOME is unset"
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
@@ -106,17 +106,12 @@ test_passwd_entry_without_home() {
         volund_image sh "$TEST_IMAGE"
         unset HOME
 
-        local err home_in
-        err="$(mktemp -p "$VOLUND_TMP_DIR" passwd-err.XXXXXX)"
+        local home_in
         # $3 and $6 are awk fields, evaluated in the container.
         # shellcheck disable=SC2016
-        home_in=$(volund_cmd sh awk -F: -v u="$(id -u)" '$3==u {print $6; exit}' /etc/passwd 2>"$err")
+        home_in=$(volund_cmd sh awk -F: -v u="$(id -u)" '$3==u {print $6; exit}' /etc/passwd)
         [ "$home_in" = "$PWD" ] || {
             echo "container home is '$home_in', workdir is '$PWD'"
-            exit 1
-        }
-        grep -q 'HOME is not set, podman will use workdir as home directory' "$err" || {
-            echo "missing HOME warning: $(cat "$err")"
             exit 1
         }
     ) || failed=1
@@ -128,8 +123,8 @@ test_passwd_entry_without_home() {
     fi
 }
 
-test_docker_passwd_files() {
-    local TEST_NAME="docker runtime gets passwd/group entry for current user"
+test_container_user_matches_caller() {
+    local TEST_NAME="container user matches the caller"
     start_test "$TEST_NAME"
     local failed=0
     setup_test_volund
@@ -137,25 +132,54 @@ test_docker_passwd_files() {
         volund_clean
         volund_image sh "$TEST_IMAGE"
 
-        # Emulate docker: a runtime named "docker" that, like docker, does
-        # not add a passwd entry for --user.
-        local bindir
-        bindir="$(mktemp -d -p "$VOLUND_TMP_DIR" bin.XXXXXX)"
-        cat > "$bindir/docker" <<'EOF'
-#!/bin/sh
-[ "$1" = run ] && { shift; exec podman run --passwd=false "$@"; }
-exec podman "$@"
-EOF
-        chmod 755 "$bindir/docker"
-        export VOLUND_RUNTIME="$bindir/docker"
-
         local out expected
-        # $6 is an awk field, evaluated in the container.
+        # $1, $3, and $6 are awk fields, evaluated in the container.
+        # The group name must occur once: an image entry of the same name
+        # would make a second line.
         # shellcheck disable=SC2016
-        out=$(volund_cmd sh sh -c 'echo "$(id -un):$(id -gn):$(awk -F: -v u="$(id -u)" '\''$3==u {print $6}'\'' /etc/passwd)"')
-        expected="$(id -un):$(id -gn):$HOME"
+        out=$(volund_cmd sh sh -c 'g=$(id -gn); n=$(awk -F: -v g="$g" '\''$1==g {c++} END {print c+0}'\'' /etc/group); h=$(awk -F: -v u="$(id -u)" '\''$3==u {print $6; exit}'\'' /etc/passwd); echo "$(id -un):$g:$n:$h"')
+        expected="$(id -un):$(id -gn):1:$HOME"
         [ "$out" = "$expected" ] || {
             echo "got '$out', expected '$expected'"
+            exit 1
+        }
+    ) || failed=1
+    cleanup_test_volund $failed
+    if [ $failed -eq 0 ]; then
+        pass_test "$TEST_NAME"
+    else
+        fail_test "$TEST_NAME"
+    fi
+}
+
+test_id_files_reused() {
+    local TEST_NAME="passwd and group files are created once"
+    start_test "$TEST_NAME"
+    local failed=0
+    setup_test_volund
+    (
+        volund_clean
+        volund_image sh "$TEST_IMAGE"
+
+        local log1 log2 pass1 pass2 group1 group2
+        log1="$VOLUND_TMP_DIR/id1.log"
+        log2="$VOLUND_TMP_DIR/id2.log"
+        VOLUND_LOG_LEVEL=debug volund_cmd sh true >"$log1" 2>&1
+        VOLUND_LOG_LEVEL=debug volund_cmd sh true >"$log2" 2>&1
+        pass1="$(sed -n 's/.* -v \([^ ]*\):\/etc\/passwd:ro.*/\1/p' "$log1")"
+        pass2="$(sed -n 's/.* -v \([^ ]*\):\/etc\/passwd:ro.*/\1/p' "$log2")"
+        group1="$(sed -n 's/.* -v \([^ ]*\):\/etc\/group:ro.*/\1/p' "$log1")"
+        group2="$(sed -n 's/.* -v \([^ ]*\):\/etc\/group:ro.*/\1/p' "$log2")"
+        [ -n "$pass1" ] && [ "$pass1" = "$pass2" ] || {
+            echo "passwd paths are '$pass1' and '$pass2'"
+            exit 1
+        }
+        [ -n "$group1" ] && [ "$group1" = "$group2" ] || {
+            echo "group paths are '$group1' and '$group2'"
+            exit 1
+        }
+        [ -f "$pass1" ] && [ -f "$group1" ] || {
+            echo "id files were removed before clean"
             exit 1
         }
     ) || failed=1
@@ -536,8 +560,9 @@ test_volund_color() {
 test_var_prefix_and_naming
 test_load_save_no_export
 test_cmd_real
-test_passwd_entry_without_home
-test_docker_passwd_files
+test_container_home_without_home
+test_container_user_matches_caller
+test_id_files_reused
 test_selinux_label_disable
 test_script_real
 test_prefix_change_and_validation_on_load

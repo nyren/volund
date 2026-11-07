@@ -587,7 +587,6 @@ phome=\$(awk -F: -v u="\$uid" '\$3==u {print \$6; exit}' /etc/passwd)
 exit 1
 EOF
     chmod 755 "$probe"
-    probe="$(cd "$(dirname "$probe")" && pwd)/$(basename "$probe")"
     unset GIT_SSH_COMMAND
     set +e
     volund_git -c core.sshCommand="$probe" ls-remote git@example.test:org/repo >/dev/null 2>&1
@@ -617,7 +616,6 @@ test_volund_git_known_hosts_prepared_home() {
 
         local out line passwd_home env_home marker kh
         out="$VOLUND_TMP_DIR/ssh-probe.out"
-        out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
         VOLUND_GIT_CREDENTIALS=auto _volund_git_ssh_probe "$out"
 
         passwd_home=

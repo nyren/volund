@@ -31,11 +31,11 @@ test_error() {
     exit 1
 }
 
-# Setup a unique .volund dir for a test. Uses .volund_test_XXXXXX template.
-# Sets VOLUND_VAR_DIR and VOLUND_TMP_DIR.
+# Setup a unique .volund dir for a test. The directory is under
+# VOLUND_PROJECT_ROOT, which is absolute, so a later cd does not move it.
 setup_test_volund() {
     local template="${1:-.volund_test}"
-    VOLUND_VAR_DIR=$(mktemp -d "${template}_XXXXXX")
+    VOLUND_VAR_DIR=$(mktemp -d "$VOLUND_PROJECT_ROOT/${template}_XXXXXX")
     VOLUND_TMP_DIR="$VOLUND_VAR_DIR/tmp"
     mkdir -p "$VOLUND_TMP_DIR"
 }
